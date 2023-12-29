@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
     dotenv::dotenv().ok();
     let config_string = &std::fs::read_to_string("config.toml")?;
     let config: Table = toml::from_str(config_string).unwrap();
-    let home: &str = config.get("home").unwrap().as_str().unwrap();
+    let home: &str = config.get("servers").unwrap().get("home").unwrap().as_str().unwrap();
     let instance_collection: HashMap<String, Mastodon> = HashMap::new();
 
     let authenticated_strings = config.get("servers").unwrap().get("authenticated").unwrap().as_array().unwrap();
@@ -31,6 +31,7 @@ async fn main() -> Result<()> {
     let mut queued_servers: HashSet<String> = HashSet::new();
     
     let mut statuses = HashMap::new();
+    println!("\x1b[32mFetching trending statuses\x1b[0m");
     for (_, remote) in instance_collection.iter() {
         for status in Fed::fetch_trending_statuses(&remote.data.base, ONE_PAGE).await? {
             if status.uri.contains(&remote.data.base as &str) {
@@ -53,8 +54,9 @@ async fn main() -> Result<()> {
             }).or_insert(status);
         }
     }
-    println!("Total statuses: {}", statuses.len());
-    println!("Queued servers: {}", queued_servers.len());
+    println!("\x1b[32mTotal statuses\x1b[0m: {}", statuses.len());
+    println!("\x1b[32mQueued servers\x1b[0m: {}", queued_servers.len());
+    println!("\x1b[32mFetching trending statuses from queued servers\x1b[0m");
     for server in queued_servers {
         for status in Fed::fetch_trending_statuses(&server, ONE_PAGE).await? {
             statuses.entry(status.uri.clone()).and_modify(|existing_status: &mut Status| {
@@ -71,75 +73,228 @@ async fn main() -> Result<()> {
 
     let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let pool = PgPool::connect(&database_url).await.unwrap();
-    let select_statement = sqlx::query!(
-        r#"SELECT * FROM fetched_statuses ORDER BY id DESC LIMIT 1"#);
-    let select_statement = select_statement.fetch_one(&pool).await.unwrap();
-    println!("Most recent status: {}", select_statement.uri);
 
+    println!("\x1b[32mInserting or updating statuses\x1b[0m");
+    let mut context_of_statuses = HashMap::new();
     for (uri, status) in statuses {
-        let select_statement = sqlx::query!(
-            r#"SELECT id FROM statuses WHERE uri = $1"#,
-            uri
-        );
-        let select_statement = select_statement.fetch_one(&pool).await;
-        if select_statement.is_err() {
-            println!("Status not found in database, searching for it: {}", uri);
-            instance_collection.get(home).unwrap().search(&uri, true).await?;
-        }
-        let select_statement = sqlx::query!(
-            r#"SELECT id FROM statuses WHERE uri = $1"#,
-            uri
-        );
-        let select_statement = select_statement.fetch_one(&pool).await;
-        if select_statement.is_err() {
-            println!("Status still not found in database, giving up: {}", uri);
-            continue;
-        }
-        let select_statement = select_statement.unwrap();
-        let status_id = select_statement.id;
-        println!("Status found in database: {}", uri);
-        let select_statement = sqlx::query!(
-            r#"SELECT id FROM status_stats WHERE status_id = $1"#,
-            status_id
-        );
-        let select_statement = select_statement.fetch_one(&pool
-        ).await;
-
-        if select_statement.is_err() {
-            println!("Status not found in status_stats table, inserting it: {}", uri);
-            let offset_date_time = time::OffsetDateTime::now_utc();
-            let current_time = time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
-            let insert_statement = sqlx::query!(
-                r#"INSERT INTO status_stats (status_id, reblogs_count, replies_count, favourites_count, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"#,
-                status_id,
-                status.reblogs_count as i64,
-                status.replies_count.unwrap_or(0) as i64,
-                status.favourites_count as i64,
-                current_time,
-                current_time
-            );
-            let insert_statement = insert_statement.execute(&pool).await;
-            if insert_statement.is_err() {
-                println!("Error inserting status: {}", insert_statement.err().unwrap());
+        println!("Status: {}", uri);
+        match Fed::find_status_id(&uri, &pool, &instance_collection, home).await {
+            Ok(status_id) => {
+                if status.reblogs_count == 0 && status.replies_count.unwrap_or(0) == 0 && status.favourites_count == 0 {
+                    println!("Status has no interactions, skipping: {}", uri);
+                    continue;
+                }
+                println!("Status found in database: {}", uri);
+                let select_statement = sqlx::query!(
+                    r#"SELECT id, reblogs_count, replies_count, favourites_count FROM status_stats WHERE status_id = $1"#,
+                    status_id
+                );
+                let select_statement = select_statement.fetch_one(&pool
+                ).await;
+        
+                if select_statement.is_err() {
+                    println!("Status not found in status_stats table, inserting it: {}", uri);
+                    let offset_date_time = time::OffsetDateTime::now_utc();
+                    let current_time = time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
+                    let insert_statement = sqlx::query!(
+                        r#"INSERT INTO status_stats (status_id, reblogs_count, replies_count, favourites_count, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"#,
+                        status_id,
+                        status.reblogs_count as i64,
+                        status.replies_count.unwrap_or(0) as i64,
+                        status.favourites_count as i64,
+                        current_time,
+                        current_time
+                    );
+                    let insert_statement = insert_statement.execute(&pool).await;
+                    if insert_statement.is_err() {
+                        println!("Error inserting status: {}", insert_statement.err().unwrap());
+                        continue;
+                    }
+                    if status.replies_count.unwrap_or(0) > 0 {
+                        println!("Fetching context for status: {}", uri);
+                        let original_id = StatusId::new(uri.split('/').last().unwrap().to_string());
+                        let original_id_string = uri.split('/').last().unwrap().to_string();
+                        println!("Original ID: {}", original_id);
+                        let base_server = reqwest::Url::parse(&uri)?.host_str().unwrap().to_string();
+                        if instance_collection.contains_key(&base_server) {
+                            println!("Fetching context for status from instance collection: {}", uri);
+                            let remote = instance_collection.get(&base_server).unwrap();
+                            let context = remote.get_context(&original_id).await?;
+                            for ancestor_status in context.ancestors {
+                                context_of_statuses.entry(ancestor_status.uri.clone()).or_insert(ancestor_status);
+                            }
+                            for descendant_status in context.descendants {
+                                context_of_statuses.entry(descendant_status.uri.clone()).or_insert(descendant_status);
+                            }
+                        } else {
+                            println!("Fetching context for status from new instance: {}", uri);
+                            println!("Registering unauth instance: {}", base_server);
+                            let url = format!("https://{}/api/v1/statuses/{}/context", base_server, original_id_string);
+                            let response = reqwest::Client::new().get(&url).send().await?;
+                            if !response.status().is_success() {
+                                println!("Error HTTP: {}", response.status());
+                                continue;
+                            }
+                            let json = response.text().await?;
+                            let context = serde_json::from_str::<Context>(&json);
+                            if context.is_err() {
+                                println!("Error JSON: {}", context.err().unwrap());
+                                continue;
+                            }
+                            let context = context.unwrap();
+                            for ancestor_status in context.ancestors {
+                                context_of_statuses.entry(ancestor_status.uri.clone()).or_insert(ancestor_status);
+                            }
+                            for descendant_status in context.descendants {
+                                context_of_statuses.entry(descendant_status.uri.clone()).or_insert(descendant_status);
+                            }
+                        }
+                    }
+                } else {
+                    let unwrapped = select_statement.unwrap();
+                    let old_reblogs_count = unwrapped.reblogs_count as u64;
+                    let old_replies_count = unwrapped.replies_count as u64;
+                    let old_favourites_count = unwrapped.favourites_count as u64;
+                    if (status.reblogs_count <= old_reblogs_count) && (status.replies_count.unwrap_or(0) <= old_replies_count) && (status.favourites_count <= old_favourites_count) {
+                        println!("Status found in status_stats table, but we have smaller counts, skipping: {}", uri);
+                        continue;
+                    }
+                    println!("Status found in status_stats table, updating it: {}", uri);
+                    let offset_date_time = time::OffsetDateTime::now_utc();
+                    let current_time = time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
+                    let update_statement = sqlx::query!(
+                        r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
+                        status.reblogs_count as i64,
+                        status.replies_count.unwrap_or(0) as i64,
+                        status.favourites_count as i64,
+                        current_time,
+                        status_id
+                    );
+                    let update_statement = update_statement.execute(&pool).await;
+                    if update_statement.is_err() {
+                        println!("Error updating status: {}", update_statement.err().unwrap());
+                        continue;
+                    }
+                    if old_replies_count < status.replies_count.unwrap_or(0) {
+                        println!("Fetching context for status: {}", uri);
+                        let original_id = StatusId::new(uri.split('/').last().unwrap().to_string());
+                        let original_id_string = uri.split('/').last().unwrap().to_string();
+                        println!("Original ID: {}", original_id);
+                        let base_server = reqwest::Url::parse(&uri)?.host_str().unwrap().to_string();
+                        if instance_collection.contains_key(&base_server) {
+                            println!("Fetching context for status from instance collection: {}", uri);
+                            let remote = instance_collection.get(&base_server).unwrap();
+                            let context = remote.get_context(&original_id).await?;
+                            for ancestor_status in context.ancestors {
+                                context_of_statuses.entry(ancestor_status.uri.clone()).or_insert(ancestor_status);
+                            }
+                            for descendant_status in context.descendants {
+                                context_of_statuses.entry(descendant_status.uri.clone()).or_insert(descendant_status);
+                            }
+                        } else {
+                            println!("Fetching context for status from new instance: {}", uri);
+                            println!("Registering unauth instance: {}", base_server);
+                            let url = format!("https://{}/api/v1/statuses/{}/context", base_server, original_id_string);
+                            let response = reqwest::Client::new().get(&url).send().await?;
+                            if !response.status().is_success() {
+                                println!("Error HTTP: {}", response.status());
+                                continue;
+                            }
+                            let json = response.text().await?;
+                            let context = serde_json::from_str::<Context>(&json);
+                            if context.is_err() {
+                                println!("Error JSON: {}", context.err().unwrap());
+                                continue;
+                            }
+                            let context = context.unwrap();
+                            for ancestor_status in context.ancestors {
+                                context_of_statuses.entry(ancestor_status.uri.clone()).or_insert(ancestor_status);
+                            }
+                            for descendant_status in context.descendants {
+                                context_of_statuses.entry(descendant_status.uri.clone()).or_insert(descendant_status);
+                            }
+                        }
+                    }
+                }
+            },
+            Err(_) => {
+                println!("Status not found in database: {}", uri);
                 continue;
             }
-        } else {
-            println!("Status found in status_stats table, updating it: {}", uri);
-            let update_statement = sqlx::query!(
-                r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3 WHERE status_id = $4"#,
-                status.reblogs_count as i64,
-                status.replies_count.unwrap_or(0) as i64,
-                status.favourites_count as i64,
-                status_id
-            );
-            let update_statement = update_statement.execute(&pool).await;
-            if update_statement.is_err() {
-                println!("Error updating status: {}", update_statement.err().unwrap());
+        }
+    println!("\x1b[32mFetched {} OK!\x1b[0m", uri);
+    }
+
+    println!("\x1b[32mFetching context statuses\x1b[0m");
+    for status in context_of_statuses {
+        if status.1.reblogs_count == 0 && status.1.replies_count.unwrap_or(0) == 0 && status.1.favourites_count == 0 {
+            println!("Status has no interactions, skipping: {}", status.0);
+            continue;
+        }
+        match Fed::find_status_id(&status.0, &pool, &instance_collection, home).await {
+            Ok(status_id) => {
+                println!("Status found in database: {}", status.0);
+                let select_statement = sqlx::query!(
+                    r#"SELECT id, reblogs_count, replies_count, favourites_count FROM status_stats WHERE status_id = $1"#,
+                    status_id
+                );
+                let select_statement = select_statement.fetch_one(&pool
+                ).await;
+        
+                if select_statement.is_err() {
+                    println!("Status not found in status_stats table, inserting it: {}", status.0);
+                    let offset_date_time = time::OffsetDateTime::now_utc();
+                    let current_time = time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
+                    let insert_statement = sqlx::query!(
+                        r#"INSERT INTO status_stats (status_id, reblogs_count, replies_count, favourites_count, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"#,
+                        status_id,
+                        status.1.reblogs_count as i64,
+                        status.1.replies_count.unwrap_or(0) as i64,
+                        status.1.favourites_count as i64,
+                        current_time,
+                        current_time
+                    );
+                    let insert_statement = insert_statement.execute(&pool).await;
+                    if insert_statement.is_err() {
+                        println!("Error inserting status: {}", insert_statement.err().unwrap());
+                        continue;
+                    }
+                } else {
+                    let unwrapped = select_statement.unwrap();
+                    let old_reblogs_count = unwrapped.reblogs_count as u64;
+                    let old_replies_count = unwrapped.replies_count as u64;
+                    let old_favourites_count = unwrapped.favourites_count as u64;
+                    if (status.1.reblogs_count <= old_reblogs_count) && (status.1.replies_count.unwrap_or(0) <= old_replies_count) && (status.1.favourites_count <= old_favourites_count) {
+                        println!("Status found in status_stats table, but we have smaller counts, skipping: {}", status.0);
+                        continue;
+                    }
+                    println!("Status found in status_stats table, updating it: {}", status.0);
+                    let offset_date_time = time::OffsetDateTime::now_utc();
+                    let current_time = time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
+                    let update_statement = sqlx::query!(
+                        r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
+                        status.1.reblogs_count as i64,
+                        status.1.replies_count.unwrap_or(0) as i64,
+                        status.1.favourites_count as i64,
+                        current_time,
+                        status_id
+                    );
+                    let update_statement = update_statement.execute(&pool).await;
+                    if update_statement.is_err() {
+                        println!("Error updating status: {}", update_statement.err().unwrap());
+                        continue;
+                    }
+                }
+                println!("\x1b[32mStatus {} found OK!\x1b[0m", status.0);
+            },
+            Err(_) => {
+                println!("Status not found in database: {}", status.0);
                 continue;
             }
         }
     }
 
+    println!("\x1b[32mAll OK!\x1b[0m");
     Ok(())
 }
 
@@ -211,5 +366,38 @@ impl Fed {
             }
         }
         Ok(trends)
+    }
+
+    pub async fn find_status_id(uri: &str, pool: &PgPool, instance_collection: &HashMap<String, Mastodon>, home: &str) -> Result<i64> {
+        let select_statement = sqlx::query!(
+            r#"SELECT id FROM statuses WHERE uri = $1"#,
+            uri
+        ).fetch_one(pool).await;
+    
+        match select_statement {
+            Ok(status) => Ok(status.id),
+            Err(_) => {
+                println!("Status not found in database, searching for it: {}", uri);
+                let search_result = instance_collection.get(home).unwrap().search(uri, true).await?;
+                if search_result.statuses.is_empty() {
+                    let message: String = format!("Status not found by home server: {}", uri);
+                    return Err(mastodon_async::Error::Other(message));
+                }
+    
+                let select_statement = sqlx::query!(
+                    r#"SELECT id FROM statuses WHERE uri = $1"#,
+                    uri
+                ).fetch_one(pool).await;
+    
+                match select_statement {
+                    Ok(status) => Ok(status.id),
+                    Err(_) => {
+                        println!("Status still not found in database, giving up: {}", uri);
+                        let message: String = format!("Status not found in database: {}", uri);
+                        Err(mastodon_async::Error::Other(message))
+                    }
+                }
+            }
+        }
     }
 }
