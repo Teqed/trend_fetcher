@@ -203,6 +203,12 @@ async fn main() -> Result<()> {
                 let original_id =
                     StatusId::new(uri.split('/').last().expect("Status ID").to_string());
                 let original_id_string = uri.split('/').last().expect("Status ID").to_string();
+                // If the original ID isn't alphanumeric, it's probably for a non-Mastodon Fediverse server
+                // We can't process these quite yet, so skip them
+                if !original_id_string.chars().all(char::is_alphanumeric) {
+                    println!("Original ID is not alphanumeric, skipping: {original_id}");
+                    continue;
+                }
                 println!("Original ID: {original_id}");
                 let base_server = reqwest::Url::parse(uri)?
                     .host_str()
