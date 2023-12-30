@@ -11,6 +11,7 @@
     clippy::style,
     clippy::suspicious,
     clippy::unwrap_used,
+    // clippy::question_mark_used,
 )]
 #![allow(clippy::too_many_lines)]
 
@@ -46,6 +47,10 @@ async fn main() -> Result<()> {
         .as_array()
         .expect("'authenticated' value in config.toml to be an array");
     let mut instance_collection = HashMap::new();
+    let home_server = Fed::get_instance(
+        &mut instance_collection,
+        config_servers_home,
+    ).await;
     for server in config_servers_authenticated_strings {
         Fed::get_instance(
             &mut instance_collection,
@@ -95,7 +100,7 @@ async fn main() -> Result<()> {
     for (uri, status) in &statuses {
         println!("Status: {uri}");
         if let Ok(status_id) =
-            Fed::find_status_id(uri, &pool, &instance_collection, config_servers_home).await
+            Fed::find_status_id(uri, &pool, &home_server).await
         {
             if status.reblogs_count == 0
                 && status.replies_count.unwrap_or(0) == 0
@@ -256,7 +261,7 @@ async fn main() -> Result<()> {
             continue;
         }
         if let Ok(status_id) =
-            Fed::find_status_id(&status.0, &pool, &instance_collection, config_servers_home).await
+            Fed::find_status_id(&status.0, &pool, &home_server).await
         {
             println!("Status found in database: {}", status.0);
             let select_statement = sqlx::query!(
@@ -466,7 +471,12 @@ impl Fed {
                 .get(&url)
                 .query(&params)
                 .send()
-                .await?;
+                .await;
+            if response.is_err() {
+                println!("Error HTTP: {}", response.expect_err("Trending statuses error"));
+                break;
+            }
+            let response = response.expect("Trending statuses");
             if !response.status().is_success() {
                 println!("Error HTTP: {}", response.status());
                 break;
@@ -511,8 +521,7 @@ impl Fed {
     pub async fn find_status_id(
         uri: &str,
         pool: &PgPool,
-        instance_collection: &HashMap<String, Mastodon>,
-        home: &str,
+        home_instance: &Mastodon,
     ) -> Result<i64> {
         let select_statement = sqlx::query!(r#"SELECT id FROM statuses WHERE uri = $1"#, uri)
             .fetch_one(pool)
@@ -522,21 +531,18 @@ impl Fed {
             Ok(status.id)
         } else {
             println!("Status not found in database, searching for it: {uri}");
-            let search_result = instance_collection
-                .get(home)
-                .expect("Home server")
-                .search(uri, true)
-                .await?;
+            let search_result = home_instance.search(uri, true)
+                .await
+                .expect("Search result");
             if search_result.statuses.is_empty() {
                 let message: String = format!("Status not found by home server: {uri}");
                 return Err(mastodon_async::Error::Other(message));
             }
 
-            let select_statement = sqlx::query!(r#"SELECT id FROM statuses WHERE uri = $1"#, uri)
+            sqlx::query!(r#"SELECT id FROM statuses WHERE uri = $1"#, uri)
                 .fetch_one(pool)
-                .await;
-
-            select_statement.map_or_else(
+                .await
+                .map_or_else(
                 |_| {
                     println!("Status still not found in database, giving up: {uri}");
                     let message: String = format!("Status not found in database: {uri}");
