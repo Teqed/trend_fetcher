@@ -257,124 +257,7 @@ async fn main() -> Result<()> {
 
     println!("\x1b[32mFetching context statuses\x1b[0m");
     for status in context_of_statuses {
-        if statuses.contains_key(&status.0) {
-            continue;
-        }
-        if status.1.reblogs_count == 0
-            && status.1.replies_count.unwrap_or(0) == 0
-            && status.1.favourites_count == 0
-        {
-            println!("Status has no interactions, skipping: {}", status.0);
-            continue;
-        }
-        if let Ok(status_id) =
-            Fed::find_status_id(&status.0, &pool, &home_server).await
-        {
-            println!("Status found in database: {}", status.0);
-            let select_statement = sqlx::query!(
-                r#"SELECT id, reblogs_count, replies_count, favourites_count FROM status_stats WHERE status_id = $1"#,
-                status_id
-            );
-            let select_statement = select_statement.fetch_one(&pool).await;
-
-            if select_statement.is_err() {
-                println!(
-                    "Status not found in status_stats table, inserting it: {}",
-                    status.0
-                );
-                let offset_date_time = time::OffsetDateTime::now_utc();
-                let current_time =
-                    time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
-                let insert_statement = sqlx::query!(
-                    r#"INSERT INTO status_stats (status_id, reblogs_count, replies_count, favourites_count, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"#,
-                    status_id,
-                    status.1.reblogs_count.try_into().unwrap_or_else(|_| {
-                        println!("Failed to convert reblogs_count to i64");
-                        0
-                    }),
-                    status
-                        .1
-                        .replies_count
-                        .unwrap_or(0)
-                        .try_into()
-                        .unwrap_or_else(|_| {
-                            println!("Failed to convert replies_count to i64");
-                            0
-                        }),
-                    status.1.favourites_count.try_into().unwrap_or_else(|_| {
-                        println!("Failed to convert favourites_count to i64");
-                        0
-                    }),
-                    current_time,
-                    current_time
-                );
-                let insert_statement = insert_statement.execute(&pool).await;
-                if let Err(err) = insert_statement {
-                    println!("Error inserting status: {err}");
-                    continue;
-                }
-            } else {
-                let record = select_statement.expect("Fetched record from database");
-                let old_reblogs_count = record.reblogs_count.try_into().unwrap_or_else(|_| {
-                    println!("Failed to convert reblogs_count to i64");
-                    0
-                });
-                let old_replies_count = record.replies_count.try_into().unwrap_or_else(|_| {
-                    println!("Failed to convert replies_count to i64");
-                    0
-                });
-                let old_favourites_count =
-                    record.favourites_count.try_into().unwrap_or_else(|_| {
-                        println!("Failed to convert favourites_count to i64");
-                        0
-                    });
-                if (status.1.reblogs_count <= old_reblogs_count)
-                    && (status.1.replies_count.unwrap_or(0) <= old_replies_count)
-                    && (status.1.favourites_count <= old_favourites_count)
-                {
-                    println!("Status found in status_stats table, but we have smaller counts, skipping: {}", status.0);
-                    continue;
-                }
-                println!(
-                    "Status found in status_stats table, updating it: {}",
-                    status.0
-                );
-                let offset_date_time = time::OffsetDateTime::now_utc();
-                let current_time =
-                    time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
-                let update_statement = sqlx::query!(
-                    r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
-                    status.1.reblogs_count.try_into().unwrap_or_else(|_| {
-                        println!("Failed to convert reblogs_count to i64");
-                        0
-                    }),
-                    status
-                        .1
-                        .replies_count
-                        .unwrap_or(0)
-                        .try_into()
-                        .unwrap_or_else(|_| {
-                            println!("Failed to convert replies_count to i64");
-                            0
-                        }),
-                    status.1.favourites_count.try_into().unwrap_or_else(|_| {
-                        println!("Failed to convert favourites_count to i64");
-                        0
-                    }),
-                    current_time,
-                    status_id
-                );
-                let update_statement = update_statement.execute(&pool).await;
-                if let Err(err) = update_statement {
-                    println!("Error updating status: {err}");
-                    continue;
-                }
-            }
-            println!("\x1b[32mStatus {} found OK!\x1b[0m", status.0);
-        } else {
-            println!("Status not found in database: {}", status.0);
-            continue;
-        }
+        Fed::add_context_status(&statuses, status.1, &pool, &home_server).await;
     }
 
     println!("\x1b[32mAll OK!\x1b[0m");
@@ -578,5 +461,136 @@ impl Fed {
                     std::cmp::max(existing_status.favourites_count, status.favourites_count);
             })
             .or_insert(status);
+    }
+
+    /// Add a status to the database.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `statuses` - The collection of statuses.
+    /// * `status` - The status to add.
+    /// * `pool` - The database connection pool.
+    /// * `home_server` - The home server.
+    /// 
+    /// # Panics
+    /// 
+    /// This function panics if the status is not found in the database.
+    pub async fn add_context_status(statuses: &HashMap<String, Status>, status: Status, pool: &PgPool, home_server: &Mastodon) {
+        if statuses.contains_key(&status.uri) {
+            println!("Status already exists, skipping: {}", status.uri);
+            return;
+        }
+        if status.reblogs_count == 0
+            && status.replies_count.unwrap_or(0) == 0
+            && status.favourites_count == 0
+        {
+            println!("Status has no interactions, skipping: {}", status.uri);
+            return;
+        }
+        if let Ok(status_id) =
+            Self::find_status_id(&status.uri, pool, home_server).await
+        {
+            println!("Status found in database: {}", status.uri);
+            let select_statement = sqlx::query!(
+                r#"SELECT id, reblogs_count, replies_count, favourites_count FROM status_stats WHERE status_id = $1"#,
+                status_id
+            );
+            let select_statement = select_statement.fetch_one(pool).await;
+
+            if select_statement.is_err() {
+                println!(
+                    "Status not found in status_stats table, inserting it: {}",
+                    status.uri
+                );
+                let offset_date_time = time::OffsetDateTime::now_utc();
+                let current_time =
+                    time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
+                let insert_statement = sqlx::query!(
+                    r#"INSERT INTO status_stats (status_id, reblogs_count, replies_count, favourites_count, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"#,
+                    status_id,
+                    status.reblogs_count.try_into().unwrap_or_else(|_| {
+                        println!("Failed to convert reblogs_count to i64");
+                        0
+                    }),
+                    status
+                        .replies_count
+                        .unwrap_or(0)
+                        .try_into()
+                        .unwrap_or_else(|_| {
+                            println!("Failed to convert replies_count to i64");
+                            0
+                        }),
+                    status.favourites_count.try_into().unwrap_or_else(|_| {
+                        println!("Failed to convert favourites_count to i64");
+                        0
+                    }),
+                    current_time,
+                    current_time
+                );
+                let insert_statement = insert_statement.execute(pool).await;
+                if let Err(err) = insert_statement {
+                    println!("Error inserting status: {err}");
+                    return;
+                }
+            } else {
+                let record = select_statement.expect("Fetched record from database");
+                let old_reblogs_count = record.reblogs_count.try_into().unwrap_or_else(|_| {
+                    println!("Failed to convert reblogs_count to i64");
+                    0
+                });
+                let old_replies_count = record.replies_count.try_into().unwrap_or_else(|_| {
+                    println!("Failed to convert replies_count to i64");
+                    0
+                });
+                let old_favourites_count =
+                    record.favourites_count.try_into().unwrap_or_else(|_| {
+                        println!("Failed to convert favourites_count to i64");
+                        0
+                    });
+                if (status.reblogs_count <= old_reblogs_count)
+                    && (status.replies_count.unwrap_or(0) <= old_replies_count)
+                    && (status.favourites_count <= old_favourites_count)
+                {
+                    println!("Status found in status_stats table, but we have smaller counts, skipping: {}", status.uri);
+                    return;
+                }
+                println!(
+                    "Status found in status_stats table, updating it: {}",
+                    status.uri
+                );
+                let offset_date_time = time::OffsetDateTime::now_utc();
+                let current_time =
+                    time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
+                let update_statement = sqlx::query!(
+                    r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
+                    status.reblogs_count.try_into().unwrap_or_else(|_| {
+                        println!("Failed to convert reblogs_count to i64");
+                        0
+                    }),
+                    status
+                        .replies_count
+                        .unwrap_or(0)
+                        .try_into()
+                        .unwrap_or_else(|_| {
+                            println!("Failed to convert replies_count to i64");
+                            0
+                        }),
+                    status.favourites_count.try_into().unwrap_or_else(|_| {
+                        println!("Failed to convert favourites_count to i64");
+                        0
+                    }),
+                    current_time,
+                    status_id
+                );
+                let update_statement = update_statement.execute(pool).await;
+                if let Err(err) = update_statement {
+                    println!("Error updating status: {err}");
+                    return;
+                }
+            }
+            println!("\x1b[32mStatus {} found OK!\x1b[0m", status.uri);
+        } else {
+            println!("Status not found in database: {}", status.uri);
+        }
     }
 }
