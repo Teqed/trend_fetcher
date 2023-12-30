@@ -111,11 +111,11 @@ async fn main() -> Result<()> {
             );
             let select_statement = select_statement.fetch_one(&pool).await;
 
+            let offset_date_time = time::OffsetDateTime::now_utc();
+            let current_time =
+                time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
             if select_statement.is_err() {
                 println!("Status not found in status_stats table, inserting it: {uri}");
-                let offset_date_time = time::OffsetDateTime::now_utc();
-                let current_time =
-                    time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
                 let insert_statement = sqlx::query!(
                     r#"INSERT INTO status_stats (status_id, reblogs_count, replies_count, favourites_count, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"#,
                     status_id,
@@ -143,62 +143,6 @@ async fn main() -> Result<()> {
                     println!("Error inserting status: {err}");
                     continue;
                 }
-                if status.replies_count.unwrap_or(0) > 0 {
-                    println!("Fetching context for status: {uri}");
-                    let original_id =
-                        StatusId::new(uri.split('/').last().expect("Status ID").to_string());
-                    let original_id_string = uri.split('/').last().expect("Status ID").to_string();
-                    println!("Original ID: {original_id}");
-                    let base_server = reqwest::Url::parse(uri)?
-                        .host_str()
-                        .expect("Base server string")
-                        .to_string();
-                    if instance_collection.contains_key(&base_server) {
-                        println!("Fetching context for status from instance collection: {uri}");
-                        let remote = instance_collection
-                            .get(&base_server)
-                            .expect("Mastodon instance");
-                        let context = remote.get_context(&original_id).await?;
-                        for ancestor_status in context.ancestors {
-                            context_of_statuses
-                                .entry(ancestor_status.uri.clone())
-                                .or_insert(ancestor_status);
-                        }
-                        for descendant_status in context.descendants {
-                            context_of_statuses
-                                .entry(descendant_status.uri.clone())
-                                .or_insert(descendant_status);
-                        }
-                    } else {
-                        println!("Fetching context for status from new instance: {uri}");
-                        println!("Registering unauth instance: {base_server}");
-                        let url = format!(
-                            "https://{base_server}/api/v1/statuses/{original_id_string}/context"
-                        );
-                        let response = reqwest::Client::new().get(&url).send().await?;
-                        if !response.status().is_success() {
-                            println!("Error HTTP: {}", response.status());
-                            continue;
-                        }
-                        let json = response.text().await?;
-                        let context = serde_json::from_str::<Context>(&json);
-                        if let Err(err) = context {
-                            println!("Error JSON: {err}");
-                            continue;
-                        }
-                        let context = context.expect("Context of Status");
-                        for ancestor_status in context.ancestors {
-                            context_of_statuses
-                                .entry(ancestor_status.uri.clone())
-                                .or_insert(ancestor_status);
-                        }
-                        for descendant_status in context.descendants {
-                            context_of_statuses
-                                .entry(descendant_status.uri.clone())
-                                .or_insert(descendant_status);
-                        }
-                    }
-                }
             } else {
                 let record = select_statement.expect("Fetched record from database");
                 let old_reblogs_count = record.reblogs_count.try_into().unwrap_or_else(|_| {
@@ -218,13 +162,10 @@ async fn main() -> Result<()> {
                     && (status.replies_count.unwrap_or(0) <= old_replies_count)
                     && (status.favourites_count <= old_favourites_count)
                 {
-                    println!("Status found in status_stats table, but we have smaller counts, skipping: {uri}");
+                    println!("Status found in status_stats table, but we don't have larger counts, skipping: {uri}");
                     continue;
                 }
                 println!("Status found in status_stats table, updating it: {uri}");
-                let offset_date_time = time::OffsetDateTime::now_utc();
-                let current_time =
-                    time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
                 let update_statement = sqlx::query!(
                     r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
                     status.reblogs_count.try_into().unwrap_or_else(|_| {
@@ -251,62 +192,49 @@ async fn main() -> Result<()> {
                     println!("Error updating status: {err}");
                     continue;
                 }
-                if old_replies_count < status.replies_count.unwrap_or(0) {
-                    println!("Fetching context for status: {uri}");
-                    let original_id =
-                        StatusId::new(uri.split('/').last().expect("Status ID").to_string());
-                    let original_id_string = uri.split('/').last().expect("Status ID").to_string();
-                    println!("Original ID: {original_id}");
-                    let base_server = reqwest::Url::parse(uri)?
-                        .host_str()
-                        .expect("Base server string")
-                        .to_string();
-                    if instance_collection.contains_key(&base_server) {
-                        println!("Fetching context for status from instance collection: {uri}");
-                        let remote = instance_collection
-                            .get(&base_server)
-                            .expect("Mastodon instance");
-                        let context = remote.get_context(&original_id).await?;
-                        for ancestor_status in context.ancestors {
-                            context_of_statuses
-                                .entry(ancestor_status.uri.clone())
-                                .or_insert(ancestor_status);
-                        }
-                        for descendant_status in context.descendants {
-                            context_of_statuses
-                                .entry(descendant_status.uri.clone())
-                                .or_insert(descendant_status);
-                        }
-                    } else {
-                        println!("Fetching context for status from new instance: {uri}");
-                        println!("Registering unauth instance: {base_server}");
-                        let url = format!(
-                            "https://{base_server}/api/v1/statuses/{original_id_string}/context"
-                        );
-                        let response = reqwest::Client::new().get(&url).send().await?;
-                        if !response.status().is_success() {
-                            println!("Error HTTP: {}", response.status());
-                            continue;
-                        }
-                        let json = response.text().await?;
-                        let context = serde_json::from_str::<Context>(&json);
-                        if let Err(err) = context {
-                            println!("Error JSON: {err}");
-                            continue;
-                        }
-                        let context = context.expect("Context of Status");
-                        for ancestor_status in context.ancestors {
-                            context_of_statuses
-                                .entry(ancestor_status.uri.clone())
-                                .or_insert(ancestor_status);
-                        }
-                        for descendant_status in context.descendants {
-                            context_of_statuses
-                                .entry(descendant_status.uri.clone())
-                                .or_insert(descendant_status);
-                        }
+            }
+            if status.replies_count.unwrap_or(0) > 0 {
+                println!("Fetching context for status: {uri}");
+                let original_id =
+                    StatusId::new(uri.split('/').last().expect("Status ID").to_string());
+                let original_id_string = uri.split('/').last().expect("Status ID").to_string();
+                println!("Original ID: {original_id}");
+                let base_server = reqwest::Url::parse(uri)?
+                    .host_str()
+                    .expect("Base server string")
+                    .to_string();
+                let context = if instance_collection.contains_key(&base_server) {
+                    let remote = instance_collection
+                        .get(&base_server)
+                        .expect("Mastodon instance");
+                    remote.get_context(&original_id).await?
+                } else {
+                    let url = format!(
+                        "https://{base_server}/api/v1/statuses/{original_id_string}/context"
+                    );
+                    let response = reqwest::Client::new().get(&url).send().await?;
+                    if !response.status().is_success() {
+                        println!("\x1b[31mError HTTP: {}\x1b[0m", response.status());
+                        continue;
                     }
+                    let json = response.text().await?;
+                    let context = serde_json::from_str::<Context>(&json);
+                    if let Err(err) = context {
+                        println!("\x1b[31mError JSON: {err}\x1b[0m");
+                        continue;
+                    }
+                    context.expect("Context of Status")
+                };
+                for ancestor_status in context.ancestors {
+                    context_of_statuses
+                        .entry(ancestor_status.uri.clone())
+                        .or_insert(ancestor_status);
                 }
+                for descendant_status in context.descendants {
+                    context_of_statuses
+                        .entry(descendant_status.uri.clone())
+                        .or_insert(descendant_status);
+                }                
             }
         } else {
             println!("Status not found in database: {uri}");
