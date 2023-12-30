@@ -12,9 +12,7 @@
     clippy::suspicious,
     clippy::unwrap_used,
 )]
-#![allow(
-    clippy::too_many_lines,
-)]
+#![allow(clippy::too_many_lines)]
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -32,42 +30,36 @@ async fn main() -> Result<()> {
     dotenv::dotenv().ok();
     let config_string = &std::fs::read_to_string("config.toml")?;
     let config: Table = toml::from_str(config_string).expect("Failed to parse config.toml");
-    let home: &str = config
+    let config_servers = config
         .get("servers")
         .expect("'servers' key in config.toml")
+        .as_table()
+        .expect("'servers' value in config.toml to be a table");
+    let config_servers_home: &str = config_servers
         .get("home")
         .expect("'home' key in 'servers' section of config.toml")
         .as_str()
-        .expect("'home' value in config.toml to be a string");
-    let authenticated_strings = config
-        .get("servers")
-        .expect("'servers' key in config.toml")
+        .expect("'home' value in config.toml is a string");
+    let config_servers_authenticated_strings = config_servers
         .get("authenticated")
         .expect("'authenticated' key in 'servers' section of config.toml")
         .as_array()
-        .expect("'authenticated' value in config.toml is an array");
-    // let unauthenticated_strings = config.get("servers").unwrap().get("unauthenticated").unwrap().as_array().unwrap();
-    let instance_collection: HashMap<String, Mastodon> = HashMap::new();
-    let mut instance_collection = Fed::get_instance(instance_collection, home).await?;
-    for server in authenticated_strings {
-        if !instance_collection.contains_key(server.as_str().expect("Server is a string")) {
-            instance_collection = Fed::get_instance(
-                instance_collection,
-                server.as_str().expect("Server is a string"),
-            )
-            .await?;
-        }
+        .expect("'authenticated' value in config.toml to be an array");
+    let mut instance_collection = HashMap::new();
+    for server in config_servers_authenticated_strings {
+        Fed::get_instance(
+            &mut instance_collection,
+            server.as_str().expect("Server is a string"),
+        )
+        .await;
     }
 
     let mut queued_servers: HashSet<String> = HashSet::new();
-
     let mut statuses = HashMap::new();
     println!("\x1b[32mFetching trending statuses\x1b[0m");
     for remote in instance_collection.values() {
         for status in Fed::fetch_trending_statuses(&remote.data.base, ONE_PAGE).await? {
-            if status.uri.contains(&remote.data.base as &str) {
-                println!("Status: {}", status.uri);
-            } else {
+            if !status.uri.contains(&remote.data.base as &str) {
                 println!("Status from another server: {}", status.uri);
                 let base = status
                     .uri
@@ -82,23 +74,7 @@ async fn main() -> Result<()> {
                     }
                 }
             }
-            statuses
-                .entry(status.uri.clone())
-                .and_modify(|existing_status: &mut Status| {
-                    println!(
-                        "Duplicate status, Reb: {:?}, Rep: {:?}, Fav: {:?}",
-                        existing_status.reblogs_count,
-                        existing_status.replies_count.unwrap_or(0),
-                        existing_status.favourites_count
-                    );
-                    existing_status.reblogs_count =
-                        std::cmp::max(existing_status.reblogs_count, status.reblogs_count);
-                    existing_status.replies_count =
-                        std::cmp::max(existing_status.replies_count, status.replies_count);
-                    existing_status.favourites_count =
-                        std::cmp::max(existing_status.favourites_count, status.favourites_count);
-                })
-                .or_insert(status);
+            Fed::modify_counts(&mut statuses, status);
         }
     }
     println!("\x1b[32mTotal statuses\x1b[0m: {}", statuses.len());
@@ -106,37 +82,11 @@ async fn main() -> Result<()> {
     println!("\x1b[32mFetching trending statuses from queued servers\x1b[0m");
     for server in queued_servers {
         for status in Fed::fetch_trending_statuses(&server, ONE_PAGE).await? {
-            statuses
-                .entry(status.uri.clone())
-                .and_modify(|existing_status: &mut Status| {
-                    println!(
-                        "Duplicate status, Reb: {:?}, Rep: {:?}, Fav: {:?}",
-                        existing_status.reblogs_count,
-                        existing_status.replies_count.unwrap_or(0),
-                        existing_status.favourites_count
-                    );
-                    existing_status.reblogs_count =
-                        std::cmp::max(existing_status.reblogs_count, status.reblogs_count);
-                    existing_status.replies_count =
-                        std::cmp::max(existing_status.replies_count, status.replies_count);
-                    existing_status.favourites_count =
-                        std::cmp::max(existing_status.favourites_count, status.favourites_count);
-                })
-                .or_insert(status);
+            Fed::modify_counts(&mut statuses, status);
         }
     }
-    for (uri, status) in &statuses {
-        println!(
-            "{}: {:?} reblogs, {:?} replies, {:?} favourites",
-            uri,
-            status.reblogs_count,
-            status.replies_count.unwrap_or(0),
-            status.favourites_count
-        );
-    }
 
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-    let pool = PgPool::connect(&database_url)
+    let pool = PgPool::connect(&env::var("DATABASE_URL").expect("DATABASE_URL must be set"))
         .await
         .expect("connection to Postgresql database");
 
@@ -144,7 +94,9 @@ async fn main() -> Result<()> {
     let mut context_of_statuses = HashMap::new();
     for (uri, status) in &statuses {
         println!("Status: {uri}");
-        if let Ok(status_id) = Fed::find_status_id(uri, &pool, &instance_collection, home).await {
+        if let Ok(status_id) =
+            Fed::find_status_id(uri, &pool, &instance_collection, config_servers_home).await
+        {
             if status.reblogs_count == 0
                 && status.replies_count.unwrap_or(0) == 0
                 && status.favourites_count == 0
@@ -160,14 +112,10 @@ async fn main() -> Result<()> {
             let select_statement = select_statement.fetch_one(&pool).await;
 
             if select_statement.is_err() {
-                println!(
-                    "Status not found in status_stats table, inserting it: {uri}"
-                );
+                println!("Status not found in status_stats table, inserting it: {uri}");
                 let offset_date_time = time::OffsetDateTime::now_utc();
-                let current_time = time::PrimitiveDateTime::new(
-                    offset_date_time.date(),
-                    offset_date_time.time(),
-                );
+                let current_time =
+                    time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
                 let insert_statement = sqlx::query!(
                     r#"INSERT INTO status_stats (status_id, reblogs_count, replies_count, favourites_count, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"#,
                     status_id,
@@ -175,10 +123,14 @@ async fn main() -> Result<()> {
                         println!("Failed to convert reblogs_count to i64");
                         0
                     }),
-                    status.replies_count.unwrap_or(0).try_into().unwrap_or_else(|_| {
-                        println!("Failed to convert replies_count to i64");
-                        0
-                    }),
+                    status
+                        .replies_count
+                        .unwrap_or(0)
+                        .try_into()
+                        .unwrap_or_else(|_| {
+                            println!("Failed to convert replies_count to i64");
+                            0
+                        }),
                     status.favourites_count.try_into().unwrap_or_else(|_| {
                         println!("Failed to convert favourites_count to i64");
                         0
@@ -188,26 +140,21 @@ async fn main() -> Result<()> {
                 );
                 let insert_statement = insert_statement.execute(&pool).await;
                 if let Err(err) = insert_statement {
-                    println!(
-                        "Error inserting status: {err}"
-                    );
+                    println!("Error inserting status: {err}");
                     continue;
                 }
                 if status.replies_count.unwrap_or(0) > 0 {
                     println!("Fetching context for status: {uri}");
                     let original_id =
                         StatusId::new(uri.split('/').last().expect("Status ID").to_string());
-                    let original_id_string =
-                        uri.split('/').last().expect("Status ID").to_string();
+                    let original_id_string = uri.split('/').last().expect("Status ID").to_string();
                     println!("Original ID: {original_id}");
                     let base_server = reqwest::Url::parse(uri)?
                         .host_str()
                         .expect("Base server string")
                         .to_string();
                     if instance_collection.contains_key(&base_server) {
-                        println!(
-                            "Fetching context for status from instance collection: {uri}"
-                        );
+                        println!("Fetching context for status from instance collection: {uri}");
                         let remote = instance_collection
                             .get(&base_server)
                             .expect("Mastodon instance");
@@ -262,10 +209,11 @@ async fn main() -> Result<()> {
                     println!("Failed to convert replies_count to i64");
                     0
                 });
-                let old_favourites_count = record.favourites_count.try_into().unwrap_or_else(|_| {
-                    println!("Failed to convert favourites_count to i64");
-                    0
-                });
+                let old_favourites_count =
+                    record.favourites_count.try_into().unwrap_or_else(|_| {
+                        println!("Failed to convert favourites_count to i64");
+                        0
+                    });
                 if (status.reblogs_count <= old_reblogs_count)
                     && (status.replies_count.unwrap_or(0) <= old_replies_count)
                     && (status.favourites_count <= old_favourites_count)
@@ -275,20 +223,22 @@ async fn main() -> Result<()> {
                 }
                 println!("Status found in status_stats table, updating it: {uri}");
                 let offset_date_time = time::OffsetDateTime::now_utc();
-                let current_time = time::PrimitiveDateTime::new(
-                    offset_date_time.date(),
-                    offset_date_time.time(),
-                );
+                let current_time =
+                    time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
                 let update_statement = sqlx::query!(
                     r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
                     status.reblogs_count.try_into().unwrap_or_else(|_| {
                         println!("Failed to convert reblogs_count to i64");
                         0
                     }),
-                    status.replies_count.unwrap_or(0).try_into().unwrap_or_else(|_| {
-                        println!("Failed to convert replies_count to i64");
-                        0
-                    }),
+                    status
+                        .replies_count
+                        .unwrap_or(0)
+                        .try_into()
+                        .unwrap_or_else(|_| {
+                            println!("Failed to convert replies_count to i64");
+                            0
+                        }),
                     status.favourites_count.try_into().unwrap_or_else(|_| {
                         println!("Failed to convert favourites_count to i64");
                         0
@@ -298,26 +248,21 @@ async fn main() -> Result<()> {
                 );
                 let update_statement = update_statement.execute(&pool).await;
                 if let Err(err) = update_statement {
-                    println!(
-                        "Error updating status: {err}"
-                    );
+                    println!("Error updating status: {err}");
                     continue;
                 }
                 if old_replies_count < status.replies_count.unwrap_or(0) {
                     println!("Fetching context for status: {uri}");
                     let original_id =
                         StatusId::new(uri.split('/').last().expect("Status ID").to_string());
-                    let original_id_string =
-                        uri.split('/').last().expect("Status ID").to_string();
+                    let original_id_string = uri.split('/').last().expect("Status ID").to_string();
                     println!("Original ID: {original_id}");
                     let base_server = reqwest::Url::parse(uri)?
                         .host_str()
                         .expect("Base server string")
                         .to_string();
                     if instance_collection.contains_key(&base_server) {
-                        println!(
-                            "Fetching context for status from instance collection: {uri}"
-                        );
+                        println!("Fetching context for status from instance collection: {uri}");
                         let remote = instance_collection
                             .get(&base_server)
                             .expect("Mastodon instance");
@@ -382,7 +327,9 @@ async fn main() -> Result<()> {
             println!("Status has no interactions, skipping: {}", status.0);
             continue;
         }
-        if let Ok(status_id) = Fed::find_status_id(&status.0, &pool, &instance_collection, home).await {
+        if let Ok(status_id) =
+            Fed::find_status_id(&status.0, &pool, &instance_collection, config_servers_home).await
+        {
             println!("Status found in database: {}", status.0);
             let select_statement = sqlx::query!(
                 r#"SELECT id, reblogs_count, replies_count, favourites_count FROM status_stats WHERE status_id = $1"#,
@@ -396,10 +343,8 @@ async fn main() -> Result<()> {
                     status.0
                 );
                 let offset_date_time = time::OffsetDateTime::now_utc();
-                let current_time = time::PrimitiveDateTime::new(
-                    offset_date_time.date(),
-                    offset_date_time.time(),
-                );
+                let current_time =
+                    time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
                 let insert_statement = sqlx::query!(
                     r#"INSERT INTO status_stats (status_id, reblogs_count, replies_count, favourites_count, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"#,
                     status_id,
@@ -407,10 +352,15 @@ async fn main() -> Result<()> {
                         println!("Failed to convert reblogs_count to i64");
                         0
                     }),
-                    status.1.replies_count.unwrap_or(0).try_into().unwrap_or_else(|_| {
-                        println!("Failed to convert replies_count to i64");
-                        0
-                    }),
+                    status
+                        .1
+                        .replies_count
+                        .unwrap_or(0)
+                        .try_into()
+                        .unwrap_or_else(|_| {
+                            println!("Failed to convert replies_count to i64");
+                            0
+                        }),
                     status.1.favourites_count.try_into().unwrap_or_else(|_| {
                         println!("Failed to convert favourites_count to i64");
                         0
@@ -420,9 +370,7 @@ async fn main() -> Result<()> {
                 );
                 let insert_statement = insert_statement.execute(&pool).await;
                 if let Err(err) = insert_statement {
-                    println!(
-                        "Error inserting status: {err}"
-                    );
+                    println!("Error inserting status: {err}");
                     continue;
                 }
             } else {
@@ -435,10 +383,11 @@ async fn main() -> Result<()> {
                     println!("Failed to convert replies_count to i64");
                     0
                 });
-                let old_favourites_count = record.favourites_count.try_into().unwrap_or_else(|_| {
-                    println!("Failed to convert favourites_count to i64");
-                    0
-                });
+                let old_favourites_count =
+                    record.favourites_count.try_into().unwrap_or_else(|_| {
+                        println!("Failed to convert favourites_count to i64");
+                        0
+                    });
                 if (status.1.reblogs_count <= old_reblogs_count)
                     && (status.1.replies_count.unwrap_or(0) <= old_replies_count)
                     && (status.1.favourites_count <= old_favourites_count)
@@ -451,20 +400,23 @@ async fn main() -> Result<()> {
                     status.0
                 );
                 let offset_date_time = time::OffsetDateTime::now_utc();
-                let current_time = time::PrimitiveDateTime::new(
-                    offset_date_time.date(),
-                    offset_date_time.time(),
-                );
+                let current_time =
+                    time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
                 let update_statement = sqlx::query!(
                     r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
                     status.1.reblogs_count.try_into().unwrap_or_else(|_| {
                         println!("Failed to convert reblogs_count to i64");
                         0
                     }),
-                    status.1.replies_count.unwrap_or(0).try_into().unwrap_or_else(|_| {
-                        println!("Failed to convert replies_count to i64");
-                        0
-                    }),
+                    status
+                        .1
+                        .replies_count
+                        .unwrap_or(0)
+                        .try_into()
+                        .unwrap_or_else(|_| {
+                            println!("Failed to convert replies_count to i64");
+                            0
+                        }),
                     status.1.favourites_count.try_into().unwrap_or_else(|_| {
                         println!("Failed to convert favourites_count to i64");
                         0
@@ -474,9 +426,7 @@ async fn main() -> Result<()> {
                 );
                 let update_statement = update_statement.execute(&pool).await;
                 if let Err(err) = update_statement {
-                    println!(
-                        "Error updating status: {err}"
-                    );
+                    println!("Error updating status: {err}");
                     continue;
                 }
             }
@@ -516,43 +466,44 @@ impl Fed {
     }
 
     /// Gets an instance from the instance collection, or registers it if it doesn't exist.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `instance_collection` - The collection of Mastodon instances.
     /// * `server` - The server to get or register.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// This function panics if the server is not registered.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// This function returns an error if there is a problem registering the server.
     pub async fn get_instance(
-        instance_collection: HashMap<String, Mastodon>,
+        instance_collection: &mut HashMap<String, Mastodon>,
         server: &str,
-    ) -> Result<HashMap<String, Mastodon>> {
-        let mut instance_collection = instance_collection;
+    ) -> Mastodon {
         let server = server.strip_prefix("https://").unwrap_or(server);
-        if instance_collection.contains_key(server) {
-            println!("Instance already registered: {server}");
-        } else {
+        if !instance_collection.contains_key(server) {
             println!("Registering instance: {server}");
-            let instance = Self::register(server).await?;
-            instance_collection.insert(server.to_string(), instance);
+            let instance = Self::register(server).await.expect("Registered instance");
+            instance_collection.insert(server.to_string(), instance.clone());
+            return instance;
         }
-        Ok(instance_collection)
+        instance_collection
+            .get(server)
+            .expect("Registered instance")
+            .clone()
     }
 
     /// Gets the current user's account information.
     ///
     /// # Arguments
-    /// 
+    ///
     /// * `mastodon` - The Mastodon instance.
-    /// 
+    ///
     /// # Errors
-    /// 
+    ///
     /// This function returns an error if there is a problem getting the current user's account information.
     pub async fn me(mastodon: &Mastodon) -> Result<()> {
         let me = mastodon.verify_credentials().await?;
@@ -653,10 +604,9 @@ impl Fed {
                 return Err(mastodon_async::Error::Other(message));
             }
 
-            let select_statement =
-                sqlx::query!(r#"SELECT id FROM statuses WHERE uri = $1"#, uri)
-                    .fetch_one(pool)
-                    .await;
+            let select_statement = sqlx::query!(r#"SELECT id FROM statuses WHERE uri = $1"#, uri)
+                .fetch_one(pool)
+                .await;
 
             select_statement.map_or_else(
                 |_| {
@@ -667,5 +617,25 @@ impl Fed {
                 |status| Ok(status.id),
             )
         }
+    }
+
+    pub fn modify_counts(statuses: &mut HashMap<String, Status>, status: Status) {
+        statuses
+            .entry(status.uri.clone())
+            .and_modify(|existing_status: &mut Status| {
+                println!(
+                    "Duplicate status, Reb: {:?}, Rep: {:?}, Fav: {:?}",
+                    existing_status.reblogs_count,
+                    existing_status.replies_count.unwrap_or(0),
+                    existing_status.favourites_count
+                );
+                existing_status.reblogs_count =
+                    std::cmp::max(existing_status.reblogs_count, status.reblogs_count);
+                existing_status.replies_count =
+                    std::cmp::max(existing_status.replies_count, status.replies_count);
+                existing_status.favourites_count =
+                    std::cmp::max(existing_status.favourites_count, status.favourites_count);
+            })
+            .or_insert(status);
     }
 }
