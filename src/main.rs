@@ -218,7 +218,7 @@ async fn main() -> Result<()> {
                     let remote = instance_collection
                         .get(&base_server)
                         .expect("Mastodon instance");
-                    remote.get_context(&original_id).await?
+                    remote.get_context(&original_id).await.expect("Context of Status")
                 } else {
                     let url = format!(
                         "https://{base_server}/api/v1/statuses/{original_id_string}/context"
@@ -236,6 +236,7 @@ async fn main() -> Result<()> {
                     }
                     context.expect("Context of Status")
                 };
+                println!("Fetched context for status: {}, ancestors: {}, descendants: {}", uri, context.ancestors.len(), context.descendants.len());
                 for ancestor_status in context.ancestors {
                     context_of_statuses
                         .entry(ancestor_status.uri.clone())
@@ -245,7 +246,7 @@ async fn main() -> Result<()> {
                     context_of_statuses
                         .entry(descendant_status.uri.clone())
                         .or_insert(descendant_status);
-                }                
+                }
             }
         } else {
             println!("Status not found in database: {uri}");
