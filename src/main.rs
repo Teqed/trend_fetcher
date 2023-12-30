@@ -23,6 +23,8 @@ use mastodon_async::{helpers::cli, Result};
 
 use sqlx::postgres::PgPool;
 use toml::Table;
+use futures::stream::FuturesUnordered;
+use futures::StreamExt;
 
 const ONE_PAGE: usize = 40;
 
@@ -222,7 +224,12 @@ async fn main() -> Result<()> {
                 let remote = instance_collection
                     .get(&base_server)
                     .expect("Mastodon instance");
-                remote.get_context(&original_id).await.expect("Context of Status")
+                let fetching = remote.get_context(&original_id).await;
+                if fetching.is_err() {
+                    println!("Error fetching context");
+                    continue;
+                }
+                fetching.expect("Context of Status")
             } else {
                 let url = format!(
                     "https://{base_server}/api/v1/statuses/{original_id_string}/context"
@@ -256,8 +263,19 @@ async fn main() -> Result<()> {
     }
 
     println!("\x1b[32mFetching context statuses\x1b[0m");
+    // for status in context_of_statuses {
+    //     Fed::add_context_status(&statuses, status.1, &pool, &home_server).await;
+    // }
+    // Add context statuses 10 at a time
+    let mut tasks = FuturesUnordered::new();
     for status in context_of_statuses {
-        Fed::add_context_status(&statuses, status.1, &pool, &home_server).await;
+        tasks.push(Fed::add_context_status(&statuses, status.1, &pool, &home_server));
+        if tasks.len() >= 10 {
+            while let Some(task) = tasks.next().await {
+                println!("...");
+                task;
+            }
+        }
     }
 
     println!("\x1b[32mAll OK!\x1b[0m");
