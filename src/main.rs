@@ -17,7 +17,6 @@
 )]
 
 use std::collections::{HashMap, HashSet};
-use std::env;
 
 use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
@@ -34,7 +33,6 @@ const MAX_FUTURES: usize = 15;
 #[tokio::main]
 async fn main() -> Result<()> {
     let start = time::OffsetDateTime::now_utc();
-    dotenv::dotenv().ok();
     let config_string = &std::fs::read_to_string("config.toml").expect("config.toml");
     let config: Table = toml::from_str(config_string).expect("Failed to parse config.toml");
     let config_servers = config
@@ -134,7 +132,14 @@ async fn main() -> Result<()> {
             }
         }
     }
-    let pool = PgPool::connect(&env::var("DATABASE_URL").expect("DATABASE_URL must be set"))
+    let database_key = config.get("database").expect("'database' key in config.toml").as_table().expect("'database' value in config.toml to be a table");
+    let database_username = database_key.get("username").expect("'username' key in 'database' section of config.toml").as_str().expect("'username' value in config.toml is a string");
+    let database_password = database_key.get("password").expect("'password' key in 'database' section of config.toml").as_str().expect("'password' value in config.toml is a string");
+    let database_host = database_key.get("host").expect("'host' key in 'database' section of config.toml").as_str().expect("'host' value in config.toml is a string");
+    let database_port = database_key.get("port").expect("'port' key in 'database' section of config.toml").as_integer().expect("'port' value in config.toml is an integer");
+    let database_name = database_key.get("name").expect("'name' key in 'database' section of config.toml").as_str().expect("'name' value in config.toml is a string");
+    let database_url = format!("postgres://{database_username}:{database_password}@{database_host}:{database_port}/{database_name}");
+    let pool = PgPool::connect(&database_url)
         .await
         .expect("connection to Postgresql database");
     println!("\x1b[32mInserting or updating statuses\x1b[0m");
