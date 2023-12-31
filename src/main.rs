@@ -11,7 +11,7 @@
     clippy::style,
     clippy::suspicious,
     clippy::unwrap_used,
-    // clippy::question_mark_used,
+    clippy::question_mark_used,
 )]
 #![allow(clippy::too_many_lines)]
 
@@ -21,19 +21,19 @@ use std::env;
 use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
 
-use sqlx::postgres::PgPool;
-use toml::Table;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use sqlx::postgres::PgPool;
+use toml::Table;
 
 const ONE_PAGE: usize = 40;
-const MAX_FUTURES: usize = 30;
+const MAX_FUTURES: usize = 15;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let start = time::OffsetDateTime::now_utc();
     dotenv::dotenv().ok();
-    let config_string = &std::fs::read_to_string("config.toml")?;
+    let config_string = &std::fs::read_to_string("config.toml").expect("config.toml");
     let config: Table = toml::from_str(config_string).expect("Failed to parse config.toml");
     let config_servers = config
         .get("servers")
@@ -51,10 +51,7 @@ async fn main() -> Result<()> {
         .as_array()
         .expect("'authenticated' value in config.toml to be an array");
     let mut instance_collection = HashMap::new();
-    let home_server = Fed::get_instance(
-        &mut instance_collection,
-        config_servers_home,
-    ).await;
+    let home_server = Fed::get_instance(&mut instance_collection, config_servers_home).await;
     for server in config_servers_authenticated_strings {
         Fed::get_instance(
             &mut instance_collection,
@@ -62,7 +59,6 @@ async fn main() -> Result<()> {
         )
         .await;
     }
-
     let mut queued_servers: HashSet<String> = HashSet::new();
     let mut statuses = HashMap::new();
     println!("\x1b[32mFetching trending statuses\x1b[0m");
@@ -75,10 +71,12 @@ async fn main() -> Result<()> {
         println!("Tasks: {}", tasks.len());
         if tasks.len() >= MAX_FUTURES || tasks_remaining == 0 {
             println!("We have enough tasks, waiting for them to finish");
-            // We want to add the results of the tasks to the statuses HashMap
             while let Some(fetched_statuses) = tasks.next().await {
                 if fetched_statuses.is_err() {
-                    println!("Error fetching trending statuses: {}", fetched_statuses.expect_err("Fetched statuses"));
+                    println!(
+                        "Error fetching trending statuses: {}",
+                        fetched_statuses.expect_err("Fetched statuses")
+                    );
                     continue;
                 }
                 let fetched_statuses = fetched_statuses.expect("Fetched statuses");
@@ -91,7 +89,6 @@ async fn main() -> Result<()> {
                             .nth(2)
                             .expect("FQDN parsed from status URI");
                         if !instance_collection.contains_key(base) {
-                            // It's not in the instance collection, but it might already be queued
                             // This is a load-bearing comment that prevents the linter from collapsing these statements
                             if queued_servers.insert(base.to_string()) {
                                 println!("Queued server: {base}");
@@ -114,7 +111,10 @@ async fn main() -> Result<()> {
         if tasks.len() >= MAX_FUTURES || tasks_remaining == 0 {
             while let Some(fetched_statuses) = tasks.next().await {
                 if fetched_statuses.is_err() {
-                    println!("Error fetching trending statuses: {}", fetched_statuses.expect_err("Fetched statuses"));
+                    println!(
+                        "Error fetching trending statuses: {}",
+                        fetched_statuses.expect_err("Fetched statuses")
+                    );
                     continue;
                 }
                 let fetched_statuses = fetched_statuses.expect("Fetched statuses");
@@ -124,41 +124,43 @@ async fn main() -> Result<()> {
             }
         }
     }
-
     let pool = PgPool::connect(&env::var("DATABASE_URL").expect("DATABASE_URL must be set"))
         .await
         .expect("connection to Postgresql database");
-
     println!("\x1b[32mInserting or updating statuses\x1b[0m");
     let mut context_of_statuses = HashMap::new();
     let mut tasks = FuturesUnordered::new();
     let mut tasks_remaining = statuses.len();
     for (uri, status) in &statuses {
         tasks_remaining -= 1;
-        tasks.push(Fed::fetch_status(uri, status, &pool, &home_server, &instance_collection));
+        tasks.push(Fed::fetch_status(
+            uri,
+            status,
+            &pool,
+            &home_server,
+            &instance_collection,
+        ));
         if tasks.len() >= MAX_FUTURES || tasks_remaining == 0 {
-            // We want to add the results of the tasks to the context_of_statuses HashMap
             while let Some(context_of_status) = tasks.next().await {
                 for (uri, status) in context_of_status {
-                    context_of_statuses
-                        .entry(uri)
-                        .or_insert(status);
+                    context_of_statuses.entry(uri).or_insert(status);
                 }
             }
         }
     }
 
     println!("\x1b[32mFetching context statuses\x1b[0m");
-    // for status in context_of_statuses {
-    //     Fed::add_context_status(&statuses, status.1, &pool, &home_server).await;
-    // }
-    // Add context statuses 10 at a time
     let mut tasks = FuturesUnordered::new();
     let context_of_statuses_length = context_of_statuses.len();
     let mut tasks_remaining = context_of_statuses_length;
     for status in context_of_statuses {
         tasks_remaining -= 1;
-        tasks.push(Fed::add_context_status(&statuses, status.1, &pool, &home_server));
+        tasks.push(Fed::add_context_status(
+            &statuses,
+            status.1,
+            &pool,
+            &home_server,
+        ));
         if tasks.len() >= MAX_FUTURES || tasks_remaining == 0 {
             while tasks.next().await == Some(()) {
                 continue;
@@ -190,12 +192,16 @@ impl Fed {
         let registration = Registration::new(url)
             .client_name("mastodon-async-examples")
             .build()
-            .await?;
-        let mastodon = cli::authenticate(registration).await?;
+            .await
+            .expect("Registration");
+        let mastodon = cli::authenticate(registration)
+            .await
+            .expect("Authentication");
         mastodon_async::helpers::toml::to_file(
             &mastodon.data,
             format!("federation/{server}-data.toml"),
-        )?;
+        )
+        .expect("Cached data");
         Ok(mastodon)
     }
 
@@ -236,13 +242,17 @@ impl Fed {
     ///
     /// * `mastodon` - The Mastodon instance.
     ///
+    /// # Panics
+    ///
+    /// This function panics if there is an error retrieving the current user.
+    ///
     /// # Errors
     ///
-    /// This function returns an error if there is a problem getting the current user's account information.
-    pub async fn me(mastodon: &Mastodon) -> Result<()> {
-        let me = mastodon.verify_credentials().await?;
+    /// This function returns an error if there is a problem retrieving the current user.
+    pub async fn me(mastodon: &Mastodon) -> Account {
+        let me = mastodon.verify_credentials().await.expect("Current user");
         println!("You are logged in as: {}", me.acct);
-        Ok(())
+        me
     }
 
     /// Fetches trending statuses from the specified base URL.
@@ -268,13 +278,12 @@ impl Fed {
         loop {
             let mut params = HashMap::new();
             params.insert("offset", offset.to_string());
-            let response = reqwest::Client::new()
-                .get(&url)
-                .query(&params)
-                .send()
-                .await;
+            let response = reqwest::Client::new().get(&url).query(&params).send().await;
             if response.is_err() {
-                println!("Error HTTP: {}", response.expect_err("Trending statuses error"));
+                println!(
+                    "Error HTTP: {}",
+                    response.expect_err("Trending statuses error")
+                );
                 break;
             }
             let response = response.expect("Trending statuses");
@@ -282,7 +291,7 @@ impl Fed {
                 println!("Error HTTP: {}", response.status());
                 break;
             }
-            let json = response.text().await?;
+            let json = response.text().await.expect("Trending statuses");
             let json = json.replace(r#""followers_count":-1"#, r#""followers_count":0"#);
             let trending_statuses_raw = serde_json::from_str::<Vec<_>>(&json);
             if trending_statuses_raw.is_err() {
@@ -319,11 +328,7 @@ impl Fed {
     /// # Errors
     ///
     /// This function returns an error if the status is not found by the home server.
-    pub async fn find_status_id(
-        uri: &str,
-        pool: &PgPool,
-        home_instance: &Mastodon,
-    ) -> Result<i64> {
+    pub async fn find_status_id(uri: &str, pool: &PgPool, home_instance: &Mastodon) -> Result<i64> {
         let select_statement = sqlx::query!(r#"SELECT id FROM statuses WHERE uri = $1"#, uri)
             .fetch_one(pool)
             .await;
@@ -332,8 +337,7 @@ impl Fed {
             Ok(status.id)
         } else {
             println!("Status not found in database, searching for it: {uri}");
-            let search_result = home_instance.search(uri, true)
-                .await;
+            let search_result = home_instance.search(uri, true).await;
             if search_result.is_err() {
                 let message: String = format!("Status not found by home server: {uri}");
                 return Err(mastodon_async::Error::Other(message));
@@ -348,13 +352,13 @@ impl Fed {
                 .fetch_one(pool)
                 .await
                 .map_or_else(
-                |_| {
-                    println!("Status still not found in database, giving up: {uri}");
-                    let message: String = format!("Status not found in database: {uri}");
-                    Err(mastodon_async::Error::Other(message))
-                },
-                |status| Ok(status.id),
-            )
+                    |_| {
+                        println!("Status still not found in database, giving up: {uri}");
+                        let message: String = format!("Status not found in database: {uri}");
+                        Err(mastodon_async::Error::Other(message))
+                    },
+                    |status| Ok(status.id),
+                )
         }
     }
 
@@ -379,18 +383,23 @@ impl Fed {
     }
 
     /// Add a status to the database.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `statuses` - The collection of statuses.
     /// * `status` - The status to add.
     /// * `pool` - The database connection pool.
     /// * `home_server` - The home server.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// This function panics if the status is not found in the database.
-    pub async fn add_context_status(statuses: &HashMap<String, Status>, status: Status, pool: &PgPool, home_server: &Mastodon) {
+    pub async fn add_context_status(
+        statuses: &HashMap<String, Status>,
+        status: Status,
+        pool: &PgPool,
+        home_server: &Mastodon,
+    ) {
         if statuses.contains_key(&status.uri) {
             println!("Status already exists, skipping: {}", status.uri);
             return;
@@ -402,9 +411,7 @@ impl Fed {
             println!("Status has no interactions, skipping: {}", status.uri);
             return;
         }
-        if let Ok(status_id) =
-            Self::find_status_id(&status.uri, pool, home_server).await
-        {
+        if let Ok(status_id) = Self::find_status_id(&status.uri, pool, home_server).await {
             println!("Status found in database: {}", status.uri);
             let select_statement = sqlx::query!(
                 r#"SELECT id, reblogs_count, replies_count, favourites_count FROM status_stats WHERE status_id = $1"#,
@@ -510,20 +517,26 @@ impl Fed {
     }
 
     /// Fetches a status from the specified URI.
-    /// 
+    ///
     /// # Arguments
-    /// 
+    ///
     /// * `uri` - The URI of the status.
     /// * `status` - The status to fetch.
     /// * `pool` - The database connection pool.
     /// * `home_server` - The home server.
     /// * `instance_collection` - The collection of Mastodon instances.
     /// * `context_of_statuses` - The collection of statuses to fetch context for.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// This function panics if the status is not found in the database.
-    pub async fn fetch_status(uri: &str, status: &Status, pool: &PgPool, home_server: &Mastodon, instance_collection: &HashMap<String, Mastodon>) -> HashMap<String, Status> {
+    pub async fn fetch_status(
+        uri: &str,
+        status: &Status,
+        pool: &PgPool,
+        home_server: &Mastodon,
+        instance_collection: &HashMap<String, Mastodon>,
+    ) -> HashMap<String, Status> {
         println!("Status: {uri}");
         let status_id = Self::find_status_id(uri, pool, home_server).await;
         let mut context_of_status = HashMap::new();
@@ -532,7 +545,7 @@ impl Fed {
             return context_of_status;
         }
         let status_id = status_id.expect("Status ID");
-        
+
         if status.reblogs_count == 0
             && status.replies_count.unwrap_or(0) == 0
             && status.favourites_count == 0
@@ -612,7 +625,10 @@ impl Fed {
                     );
                     let response = reqwest::Client::new().get(&url_string).send().await;
                     if response.is_err() {
-                        println!("\x1b[31mError HTTP: {}\x1b[0m", response.expect_err("Context of Status"));
+                        println!(
+                            "\x1b[31mError HTTP: {}\x1b[0m",
+                            response.expect_err("Context of Status")
+                        );
                         return context_of_status;
                     }
                     let response = response.expect("Context of Status");
@@ -628,7 +644,12 @@ impl Fed {
                     }
                     context.expect("Context of Status")
                 };
-                println!("Fetched context for status: {}, ancestors: {}, descendants: {}", uri, context.ancestors.len(), context.descendants.len());
+                println!(
+                    "Fetched context for status: {}, ancestors: {}, descendants: {}",
+                    uri,
+                    context.ancestors.len(),
+                    context.descendants.len()
+                );
                 for ancestor_status in context.ancestors {
                     context_of_status
                         .entry(ancestor_status.uri.clone())
@@ -650,11 +671,10 @@ impl Fed {
                 println!("Failed to convert replies_count to i64");
                 0
             });
-            let old_favourites_count =
-                record.favourites_count.try_into().unwrap_or_else(|_| {
-                    println!("Failed to convert favourites_count to i64");
-                    0
-                });
+            let old_favourites_count = record.favourites_count.try_into().unwrap_or_else(|_| {
+                println!("Failed to convert favourites_count to i64");
+                0
+            });
             if (status.reblogs_count <= old_reblogs_count)
                 && (status.replies_count.unwrap_or(0) <= old_replies_count)
                 && (status.favourites_count <= old_favourites_count)
@@ -722,7 +742,10 @@ impl Fed {
                     );
                     let response = reqwest::Client::new().get(&url_string).send().await;
                     if response.is_err() {
-                        println!("\x1b[31mError HTTP: {}\x1b[0m", response.expect_err("Context of Status"));
+                        println!(
+                            "\x1b[31mError HTTP: {}\x1b[0m",
+                            response.expect_err("Context of Status")
+                        );
                         return context_of_status;
                     }
                     let response = response.expect("Context of Status");
@@ -738,7 +761,12 @@ impl Fed {
                     }
                     context.expect("Context of Status")
                 };
-                println!("Fetched context for status: {}, ancestors: {}, descendants: {}", uri, context.ancestors.len(), context.descendants.len());
+                println!(
+                    "Fetched context for status: {}, ancestors: {}, descendants: {}",
+                    uri,
+                    context.ancestors.len(),
+                    context.descendants.len()
+                );
                 for ancestor_status in context.ancestors {
                     context_of_status
                         .entry(ancestor_status.uri.clone())
