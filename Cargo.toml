@@ -2,6 +2,12 @@
 name = "trend_fetcher"
 version = "0.1.0"
 edition = "2021"
+description = "Fetches trends from Mastodon"
+license = "MIT"
+repository = "https://github.com/Teqed/trend_fetcher"
+keywords = ["mastodon", "fediverse"]
+categories = ["web-programming"]
+readme = "README.md"
 
 [dependencies]
 reqwest = "0.11.23"

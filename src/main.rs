@@ -1,19 +1,20 @@
 // src/main.rs
 #![warn(
-    // clippy::all,
-    // clippy::cargo,
+    clippy::cargo,
     clippy::complexity,
     clippy::correctness,
     clippy::nursery,
     clippy::pedantic,
     clippy::perf,
-    // clippy::restriction,
     clippy::style,
     clippy::suspicious,
     clippy::unwrap_used,
     clippy::question_mark_used,
 )]
-#![allow(clippy::too_many_lines)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::multiple_crate_versions,
+)]
 
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -27,6 +28,7 @@ use sqlx::postgres::PgPool;
 use toml::Table;
 
 const ONE_PAGE: usize = 40;
+const THREE_PAGES: usize = 120;
 const MAX_FUTURES: usize = 15;
 
 #[tokio::main]
@@ -50,6 +52,11 @@ async fn main() -> Result<()> {
         .expect("'authenticated' key in 'servers' section of config.toml")
         .as_array()
         .expect("'authenticated' value in config.toml to be an array");
+    let config_servers_unauthenticated_strings = config_servers
+        .get("unauthenticated")
+        .expect("'unauthenticated' key in 'servers' section of config.toml")
+        .as_array()
+        .expect("'unauthenticated' value in config.toml to be an array");
     let mut instance_collection = HashMap::new();
     let home_server = Fed::get_instance(&mut instance_collection, config_servers_home).await;
     for server in config_servers_authenticated_strings {
@@ -60,6 +67,9 @@ async fn main() -> Result<()> {
         .await;
     }
     let mut queued_servers: HashSet<String> = HashSet::new();
+    for server in config_servers_unauthenticated_strings {
+        queued_servers.insert(server.as_str().expect("Server is a string").to_string());
+    }
     let mut statuses = HashMap::new();
     println!("\x1b[32mFetching trending statuses\x1b[0m");
     let mut tasks = FuturesUnordered::new();
@@ -67,7 +77,7 @@ async fn main() -> Result<()> {
     for remote in instance_collection.values() {
         tasks_remaining -= 1;
         println!("Fetching trending statuses from {}", remote.data.base);
-        tasks.push(Fed::fetch_trending_statuses(&remote.data.base, ONE_PAGE));
+        tasks.push(Fed::fetch_trending_statuses(&remote.data.base, THREE_PAGES));
         println!("Tasks: {}", tasks.len());
         if tasks.len() >= MAX_FUTURES || tasks_remaining == 0 {
             println!("We have enough tasks, waiting for them to finish");
@@ -107,7 +117,7 @@ async fn main() -> Result<()> {
     let mut tasks_remaining = queued_servers.len();
     for server in &queued_servers {
         tasks_remaining -= 1;
-        tasks.push(Fed::fetch_trending_statuses(server.as_str(), ONE_PAGE));
+        tasks.push(Fed::fetch_trending_statuses(server.as_str(), THREE_PAGES));
         if tasks.len() >= MAX_FUTURES || tasks_remaining == 0 {
             while let Some(fetched_statuses) = tasks.next().await {
                 if fetched_statuses.is_err() {
