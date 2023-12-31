@@ -72,39 +72,40 @@ async fn main() -> Result<()> {
     println!("\x1b[32mFetching trending statuses\x1b[0m");
     let mut tasks = FuturesUnordered::new();
     let mut tasks_remaining = instance_collection.len();
-    for remote in instance_collection.values() {
-        tasks_remaining -= 1;
-        println!("Fetching trending statuses from {}", remote.data.base);
-        tasks.push(Fed::fetch_trending_statuses(&remote.data.base, THREE_PAGES));
-        println!("Tasks: {}", tasks.len());
-        if tasks.len() >= MAX_FUTURES || tasks_remaining == 0 {
-            println!("We have enough tasks, waiting for them to finish");
-            while let Some(fetched_statuses) = tasks.next().await {
-                if fetched_statuses.is_err() {
-                    println!(
-                        "Error fetching trending statuses: {}",
-                        fetched_statuses.expect_err("Fetched statuses")
-                    );
-                    continue;
-                }
-                let fetched_statuses = fetched_statuses.expect("Fetched statuses");
-                for status in fetched_statuses {
-                    if !status.uri.contains(&remote.data.base as &str) {
-                        println!("Status from another server: {}", status.uri);
-                        let base = status
-                            .uri
-                            .split('/')
-                            .nth(2)
-                            .expect("FQDN parsed from status URI");
-                        if !instance_collection.contains_key(base) {
-                            // This is a load-bearing comment that prevents the linter from collapsing these statements
-                            if queued_servers.insert(base.to_string()) {
-                                println!("Queued server: {base}");
-                            }
-                        }
+    let instance_collection_vec: Vec<_> = instance_collection.iter().collect();
+    let mut current_instance_index = 0;
+    while tasks_remaining > 0 || !tasks.is_empty() {
+        while tasks.len() < MAX_FUTURES && tasks_remaining > 0 {
+            tasks_remaining -= 1;
+            let remote = &instance_collection_vec[current_instance_index];
+            println!("Fetching trending statuses from {}", remote.1.data.base);
+            tasks.push(Fed::fetch_trending_statuses(&remote.1.data.base, THREE_PAGES));
+            println!("Tasks: {}", tasks.len());
+            current_instance_index += 1;
+        }
+
+        if let Some(fetched_statuses) = tasks.next().await {
+            if fetched_statuses.is_err() {
+                println!(
+                    "Error fetching trending statuses: {}",
+                    fetched_statuses.expect_err("Fetched statuses")
+                );
+                continue;
+            }
+            let fetched_statuses = fetched_statuses.expect("Fetched statuses");
+            for status in fetched_statuses {
+                let base = status
+                    .uri
+                    .split('/')
+                    .nth(2)
+                    .expect("FQDN parsed from status URI");
+                if !instance_collection.contains_key(base) {
+                    // This is a load-bearing comment that prevents the linter from collapsing these statements
+                    if queued_servers.insert(base.to_string()) {
+                        println!("Queued server: {base}");
                     }
-                    Fed::modify_counts(&mut statuses, status);
                 }
+                Fed::modify_counts(&mut statuses, status);
             }
         }
     }
@@ -113,22 +114,29 @@ async fn main() -> Result<()> {
     println!("\x1b[32mFetching trending statuses from queued servers\x1b[0m");
     let mut tasks = FuturesUnordered::new();
     let mut tasks_remaining = queued_servers.len();
-    for server in &queued_servers {
-        tasks_remaining -= 1;
-        tasks.push(Fed::fetch_trending_statuses(server.as_str(), THREE_PAGES));
-        if tasks.len() >= MAX_FUTURES || tasks_remaining == 0 {
-            while let Some(fetched_statuses) = tasks.next().await {
-                if fetched_statuses.is_err() {
-                    println!(
-                        "Error fetching trending statuses: {}",
-                        fetched_statuses.expect_err("Fetched statuses")
-                    );
-                    continue;
-                }
-                let fetched_statuses = fetched_statuses.expect("Fetched statuses");
-                for status in fetched_statuses {
-                    Fed::modify_counts(&mut statuses, status);
-                }
+    let queued_servers_vec: Vec<_> = queued_servers.iter().collect();
+    let mut current_server_index = 0;
+    while tasks_remaining > 0 || !tasks.is_empty() {
+        while tasks.len() < MAX_FUTURES && tasks_remaining > 0 {
+            tasks_remaining -= 1;
+            let server = queued_servers_vec[current_server_index];
+            println!("Fetching trending statuses from {server}");
+            tasks.push(Fed::fetch_trending_statuses(server, THREE_PAGES));
+            println!("Tasks: {}", tasks.len());
+            current_server_index += 1;
+        }
+
+        if let Some(fetched_statuses) = tasks.next().await {
+            if fetched_statuses.is_err() {
+                println!(
+                    "Error fetching trending statuses: {}",
+                    fetched_statuses.expect_err("Fetched statuses")
+                );
+                continue;
+            }
+            let fetched_statuses = fetched_statuses.expect("Fetched statuses");
+            for status in fetched_statuses {
+                Fed::modify_counts(&mut statuses, status);
             }
         }
     }
@@ -146,20 +154,26 @@ async fn main() -> Result<()> {
     let mut context_of_statuses = HashMap::new();
     let mut tasks = FuturesUnordered::new();
     let mut tasks_remaining = statuses.len();
-    for (uri, status) in &statuses {
-        tasks_remaining -= 1;
-        tasks.push(Fed::fetch_status(
-            uri,
-            status,
-            &pool,
-            &home_server,
-            &instance_collection,
-        ));
-        if tasks.len() >= MAX_FUTURES || tasks_remaining == 0 {
-            while let Some(context_of_status) = tasks.next().await {
-                for (uri, status) in context_of_status {
-                    context_of_statuses.entry(uri).or_insert(status);
-                }
+    let statuses_vec: Vec<_> = statuses.iter().collect();
+    let mut current_status_index = 0;
+    while tasks_remaining > 0 || !tasks.is_empty() {
+        while tasks.len() < MAX_FUTURES && tasks_remaining > 0 {
+            tasks_remaining -= 1;
+            let (uri, status) = statuses_vec[current_status_index];
+            tasks.push(Fed::fetch_status(
+                uri,
+                status,
+                &pool,
+                &home_server,
+                &instance_collection,
+            ));
+            println!("Tasks: {}", tasks.len());
+            current_status_index += 1;
+        }
+
+        if let Some(context_of_status) = tasks.next().await {
+            for (uri, status) in context_of_status {
+                context_of_statuses.entry(uri).or_insert(status);
             }
         }
     }
@@ -168,18 +182,24 @@ async fn main() -> Result<()> {
     let mut tasks = FuturesUnordered::new();
     let context_of_statuses_length = context_of_statuses.len();
     let mut tasks_remaining = context_of_statuses_length;
-    for status in context_of_statuses {
-        tasks_remaining -= 1;
-        tasks.push(Fed::add_context_status(
-            &statuses,
-            status.1,
-            &pool,
-            &home_server,
-        ));
-        if tasks.len() >= MAX_FUTURES || tasks_remaining == 0 {
-            while tasks.next().await == Some(()) {
-                continue;
-            }
+    let context_of_statuses_vec: Vec<_> = context_of_statuses.iter().collect();
+    let mut current_context_of_status_index = 0;
+    while tasks_remaining > 0 || !tasks.is_empty() {
+        while tasks.len() < MAX_FUTURES && tasks_remaining > 0 {
+            tasks_remaining -= 1;
+            let (_, status) = context_of_statuses_vec[current_context_of_status_index];
+            tasks.push(Fed::add_context_status(
+                &statuses,
+                status.clone(),
+                &pool,
+                &home_server,
+            ));
+            println!("Tasks: {}", tasks.len());
+            current_context_of_status_index += 1;
+        }
+
+        if (tasks.next().await).is_some() {
+            continue;
         }
     }
 
