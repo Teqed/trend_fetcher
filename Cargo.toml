@@ -13,7 +13,7 @@ readme = "README.md"
 reqwest = "0.11.23"
 serde_json = "1.0.108"
 tokio = "1.35.1"
-sqlx = { version = "0.7", features = [ "runtime-tokio", "postgres", "tls-native-tls", "time" ] }
+sqlx = { version = "0.7", features = ["runtime-tokio", "postgres", "tls-native-tls", "time"] }
 dotenv = "0.15.0"
 toml = "0.8.8"
 time = "0.3.31"
