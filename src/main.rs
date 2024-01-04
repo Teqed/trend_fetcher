@@ -25,6 +25,7 @@ use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use sqlx::postgres::PgPool;
 use toml::Table;
+use colored::Colorize;
 
 const ONE_PAGE: usize = 40;
 const THREE_PAGES: usize = 120;
@@ -69,7 +70,7 @@ async fn main() -> Result<()> {
         queued_servers.insert(server.as_str().expect("Server is a string").to_string());
     }
     let mut statuses = HashMap::new();
-    println!("\x1b[32mFetching trending statuses\x1b[0m");
+    println!("{}", "Fetching trending statuses".green());
     let mut tasks = FuturesUnordered::new();
     let mut tasks_remaining = instance_collection.len();
     let instance_collection_vec: Vec<_> = instance_collection.iter().collect();
@@ -109,9 +110,9 @@ async fn main() -> Result<()> {
             }
         }
     }
-    println!("\x1b[32mTotal statuses\x1b[0m: {}", statuses.len());
-    println!("\x1b[32mQueued servers\x1b[0m: {}", queued_servers.len());
-    println!("\x1b[32mFetching trending statuses from queued servers\x1b[0m");
+    println!("Total statuses: {}", statuses.len());
+    println!("Queued servers: {}", queued_servers.len());
+    println!("Fetching trending statuses from queued servers");
     let mut tasks = FuturesUnordered::new();
     let mut tasks_remaining = queued_servers.len();
     let queued_servers_vec: Vec<_> = queued_servers.iter().collect();
@@ -150,7 +151,7 @@ async fn main() -> Result<()> {
     let pool = PgPool::connect(&database_url)
         .await
         .expect("connection to Postgresql database");
-    println!("\x1b[32mInserting or updating statuses\x1b[0m");
+    println!("{}", "Inserting or updating statuses".green());
     let mut context_of_statuses = HashMap::new();
     let mut tasks = FuturesUnordered::new();
     let mut tasks_remaining = statuses.len();
@@ -178,7 +179,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    println!("\x1b[32mFetching context statuses\x1b[0m");
+    println!("{}", "Fetching context statuses".green());
     let mut tasks = FuturesUnordered::new();
     let context_of_statuses_length = context_of_statuses.len();
     let mut tasks_remaining = context_of_statuses_length;
@@ -203,7 +204,7 @@ async fn main() -> Result<()> {
         }
     }
 
-    println!("\x1b[32mAll OK!\x1b[0m");
+    println!("{}", "All OK!".green());
     println!("We saw {} statuses", statuses.len());
     println!("We saw {context_of_statuses_length} context statuses");
     let end = time::OffsetDateTime::now_utc();
@@ -545,7 +546,7 @@ impl Fed {
                     return;
                 }
             }
-            println!("\x1b[32mStatus {} found OK!\x1b[0m", status.uri);
+            println!("{} {}", "Status found OK!".green(), status.uri);
         } else {
             println!("Status not found in database: {}", status.uri);
         }
@@ -661,20 +662,20 @@ impl Fed {
                     let response = reqwest::Client::new().get(&url_string).send().await;
                     if response.is_err() {
                         println!(
-                            "\x1b[31mError HTTP: {}\x1b[0m",
+                            "{} {}", "Error HTTP:".red(),
                             response.expect_err("Context of Status")
                         );
                         return context_of_status;
                     }
                     let response = response.expect("Context of Status");
                     if !response.status().is_success() {
-                        println!("\x1b[31mError HTTP: {}\x1b[0m", response.status());
+                        println!("{} {}", "Error HTTP:".red(), response.status());
                         return context_of_status;
                     }
                     let json = response.text().await.expect("Context of Status");
                     let context = serde_json::from_str::<Context>(&json);
                     if let Err(err) = context {
-                        println!("\x1b[31mError JSON: {err}\x1b[0m");
+                        println!("{} {err}", "Error JSON:".red());
                         return context_of_status;
                     }
                     context.expect("Context of Status")
@@ -778,20 +779,21 @@ impl Fed {
                     let response = reqwest::Client::new().get(&url_string).send().await;
                     if response.is_err() {
                         println!(
-                            "\x1b[31mError HTTP: {}\x1b[0m",
+                            "{} {}",
+                            "Error HTTP:".red(),
                             response.expect_err("Context of Status")
                         );
                         return context_of_status;
                     }
                     let response = response.expect("Context of Status");
                     if !response.status().is_success() {
-                        println!("\x1b[31mError HTTP: {}\x1b[0m", response.status());
+                        println!("{} {}", "Error HTTP:".red(), response.status());
                         return context_of_status;
                     }
                     let json = response.text().await.expect("Context of Status");
                     let context = serde_json::from_str::<Context>(&json);
                     if let Err(err) = context {
-                        println!("\x1b[31mError JSON: {err}\x1b[0m");
+                        println!("{} {err}", "Error JSON:".red());
                         return context_of_status;
                     }
                     context.expect("Context of Status")
@@ -814,7 +816,8 @@ impl Fed {
                 }
             }
         }
-        println!("\x1b[32mFetched {uri} OK!\x1b[0m");
+        let msg = format!("Fetched {uri} OK!").green();
+        println!("{msg}");
         context_of_status
     }
 }

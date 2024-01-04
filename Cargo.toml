@@ -18,6 +18,7 @@ dotenv = "0.15.0"
 toml = "0.8.8"
 time = "0.3.31"
 futures = "0.3.30"
+colored = "2.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
