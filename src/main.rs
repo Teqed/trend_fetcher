@@ -9,24 +9,21 @@
     clippy::style,
     clippy::suspicious,
     clippy::unwrap_used,
-    clippy::question_mark_used,
+    clippy::question_mark_used
 )]
-#![allow(
-    clippy::too_many_lines,
-    clippy::multiple_crate_versions,
-)]
+#![allow(clippy::too_many_lines, clippy::multiple_crate_versions)]
 
 use std::collections::{HashMap, HashSet};
 
 use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
 
+use colored::Colorize;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use sqlx::postgres::PgPool;
 use toml::Table;
-use colored::Colorize;
-use tracing::{warn, info, debug, error};
+use tracing::{debug, error, info, warn};
 
 const PAGE: usize = 40;
 const MAX_FUTURES: usize = 15;
@@ -117,7 +114,10 @@ async fn main() -> Result<()> {
     }
     info!("Total statuses: {}", statuses.len());
     info!("Queued servers: {}", queued_servers.len());
-    info!("{}", "Fetching trending statuses from queued servers".green());
+    info!(
+        "{}",
+        "Fetching trending statuses from queued servers".green()
+    );
     let mut tasks = FuturesUnordered::new();
     let mut tasks_remaining = queued_servers.len();
     let queued_servers_vec: Vec<_> = queued_servers.iter().collect();
@@ -145,12 +145,36 @@ async fn main() -> Result<()> {
             }
         }
     }
-    let database_key = config.get("database").expect("'database' key in config.toml").as_table().expect("'database' value in config.toml to be a table");
-    let database_username = database_key.get("username").expect("'username' key in 'database' section of config.toml").as_str().expect("'username' value in config.toml is a string");
-    let database_password = database_key.get("password").expect("'password' key in 'database' section of config.toml").as_str().expect("'password' value in config.toml is a string");
-    let database_host = database_key.get("host").expect("'host' key in 'database' section of config.toml").as_str().expect("'host' value in config.toml is a string");
-    let database_port = database_key.get("port").expect("'port' key in 'database' section of config.toml").as_integer().expect("'port' value in config.toml is an integer");
-    let database_name = database_key.get("name").expect("'name' key in 'database' section of config.toml").as_str().expect("'name' value in config.toml is a string");
+    let database_key = config
+        .get("database")
+        .expect("'database' key in config.toml")
+        .as_table()
+        .expect("'database' value in config.toml to be a table");
+    let database_username = database_key
+        .get("username")
+        .expect("'username' key in 'database' section of config.toml")
+        .as_str()
+        .expect("'username' value in config.toml is a string");
+    let database_password = database_key
+        .get("password")
+        .expect("'password' key in 'database' section of config.toml")
+        .as_str()
+        .expect("'password' value in config.toml is a string");
+    let database_host = database_key
+        .get("host")
+        .expect("'host' key in 'database' section of config.toml")
+        .as_str()
+        .expect("'host' value in config.toml is a string");
+    let database_port = database_key
+        .get("port")
+        .expect("'port' key in 'database' section of config.toml")
+        .as_integer()
+        .expect("'port' value in config.toml is an integer");
+    let database_name = database_key
+        .get("name")
+        .expect("'name' key in 'database' section of config.toml")
+        .as_str()
+        .expect("'name' value in config.toml is a string");
     let database_url = format!("postgres://{database_username}:{database_password}@{database_host}:{database_port}/{database_name}");
     let pool = PgPool::connect(&database_url)
         .await
@@ -218,7 +242,6 @@ async fn main() -> Result<()> {
 pub struct Fed;
 
 impl Fed {
-
     async fn register(server: &str) -> Result<Mastodon> {
         if let Ok(data) =
             mastodon_async::helpers::toml::from_file(format!("federation/{server}-data.toml"))
@@ -404,7 +427,6 @@ impl Fed {
                 )
         }
     }
-
 
     pub fn modify_counts(statuses: &mut HashMap<String, Status>, status: Status) {
         statuses
@@ -672,7 +694,8 @@ impl Fed {
                     let response = reqwest::Client::new().get(&url_string).send().await;
                     if response.is_err() {
                         error!(
-                            "{} {}", "Error HTTP:".red(),
+                            "{} {}",
+                            "Error HTTP:".red(),
                             response.expect_err("Context of Status")
                         );
                         return context_of_status;
