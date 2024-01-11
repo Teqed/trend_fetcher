@@ -33,9 +33,6 @@ const MAX_FUTURES: usize = 15;
 async fn main() -> Result<()> {
     let subscriber = tracing_subscriber::FmtSubscriber::new();
     tracing::subscriber::set_global_default(subscriber).expect("default subscriber");
-    debug! {"This is a debug message"};
-    let test_message = "Success";
-    info!("Test: {}", test_message);
     let start = time::OffsetDateTime::now_utc();
     let config_string = &std::fs::read_to_string("config.toml").expect("config.toml");
     let config: Table = toml::from_str(config_string).expect("Failed to parse config.toml");
