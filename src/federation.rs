@@ -6,12 +6,14 @@ use mastodon_async::{helpers::cli, Result};
 use colored::Colorize;
 use sqlx::postgres::PgPool;
 use tracing::{debug, error, info, warn};
+use crate::PAGE;
 
-const PAGE: usize = 40;
-
+/// Struct for interacting with Fediverse APIs.
 pub struct Federation;
 
+/// Implementation of Federation.
 impl Federation {
+    /// Registers a server with the Mastodon instance.
     pub(crate) async fn register(server: &str) -> Result<Mastodon> {
         if let Ok(data) =
             mastodon_async::helpers::toml::from_file(format!("federation/{server}-data.toml"))
@@ -85,14 +87,14 @@ impl Federation {
     ///
     /// This function returns an error if there is a problem retrieving the current user.
 
-    pub async fn me(mastodon: &Mastodon) -> Account {
-        let me = mastodon
-            .verify_credentials()
-            .await
-            .expect("should be current user");
-        info!("You are logged in as: {}", me.acct);
-        me
-    }
+    // pub async fn me(mastodon: &Mastodon) -> Account {
+    //     let me = mastodon
+    //         .verify_credentials()
+    //         .await
+    //         .expect("should be current user");
+    //     info!("You are logged in as: {}", me.acct);
+    //     me
+    // }
 
     /// Fetches trending statuses from the specified base URL.
     ///
@@ -204,6 +206,7 @@ impl Federation {
         }
     }
 
+    /// Modify the counts of a status.
     pub fn modify_counts(statuses: &mut HashMap<String, Status>, status: Status) {
         statuses
             .entry(status.uri.clone())
@@ -539,7 +542,7 @@ impl Federation {
             let update_statement = sqlx::query!(
                 r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
                 status.reblogs_count.try_into().unwrap_or_else(|_| {
-                    println!("Failed to convert reblogs_count to i64");
+                    warn!("Failed to convert reblogs_count to i64");
                     0
                 }),
                 status
@@ -547,11 +550,11 @@ impl Federation {
                     .unwrap_or(0)
                     .try_into()
                     .unwrap_or_else(|_| {
-                        println!("Failed to convert replies_count to i64");
+                        warn!("Failed to convert replies_count to i64");
                         0
                     }),
                 status.favourites_count.try_into().unwrap_or_else(|_| {
-                    println!("Failed to convert favourites_count to i64");
+                    warn!("Failed to convert favourites_count to i64");
                     0
                 }),
                 current_time,
