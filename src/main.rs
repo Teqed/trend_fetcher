@@ -32,42 +32,42 @@ const MAX_FUTURES: usize = 15;
 #[tracing::instrument]
 async fn main() -> Result<()> {
     let subscriber = tracing_subscriber::FmtSubscriber::new();
-    tracing::subscriber::set_global_default(subscriber).expect("default subscriber");
+    tracing::subscriber::set_global_default(subscriber).expect("should be default subscriber");
     let start = time::OffsetDateTime::now_utc();
-    let config_string = &std::fs::read_to_string("config.toml").expect("config.toml");
-    let config: Table = toml::from_str(config_string).expect("Failed to parse config.toml");
+    let config_string = &std::fs::read_to_string("config.toml").expect("config.toml should exist");
+    let config: Table = toml::from_str(config_string).expect("config.toml should be valid TOML");
     let config_servers = config
         .get("servers")
-        .expect("'servers' key in config.toml")
+        .expect("'servers' key should be in config.toml")
         .as_table()
-        .expect("'servers' value in config.toml to be a table");
+        .expect("'servers' value in config.toml should be a table");
     let config_servers_home: &str = config_servers
         .get("home")
-        .expect("'home' key in 'servers' section of config.toml")
+        .expect("'home' key should be in 'servers' section of config.toml")
         .as_str()
-        .expect("'home' value in config.toml is a string");
+        .expect("'home' value in config.toml should be a string");
     let config_servers_authenticated_strings = config_servers
         .get("authenticated")
-        .expect("'authenticated' key in 'servers' section of config.toml")
+        .expect("'authenticated' key should be in 'servers' section of config.toml")
         .as_array()
-        .expect("'authenticated' value in config.toml to be an array");
+        .expect("'authenticated' value in config.toml should be an array");
     let config_servers_unauthenticated_strings = config_servers
         .get("unauthenticated")
-        .expect("'unauthenticated' key in 'servers' section of config.toml")
+        .expect("'unauthenticated' key should be in 'servers' section of config.toml")
         .as_array()
-        .expect("'unauthenticated' value in config.toml to be an array");
+        .expect("'unauthenticated' value in config.toml should be an array");
     let mut instance_collection = HashMap::new();
     let home_server = Fed::get_instance(&mut instance_collection, config_servers_home).await;
     for server in config_servers_authenticated_strings {
         Fed::get_instance(
             &mut instance_collection,
-            server.as_str().expect("Server is a string"),
+            server.as_str().expect("Server should be a string"),
         )
         .await;
     }
     let mut queued_servers: HashSet<String> = HashSet::new();
     for server in config_servers_unauthenticated_strings {
-        queued_servers.insert(server.as_str().expect("Server is a string").to_string());
+        queued_servers.insert(server.as_str().expect("Server should be a string").to_string());
     }
     let mut statuses = HashMap::new();
     info!("{}", "Fetching trending statuses".green().to_string());
@@ -92,13 +92,13 @@ async fn main() -> Result<()> {
                 )};
                 continue;
             }
-            let fetched_statuses = fetched_statuses.expect("Fetched statuses");
+            let fetched_statuses = fetched_statuses.expect("Should be fetched statuses");
             for status in fetched_statuses {
                 let base = status
                     .uri
                     .split('/')
                     .nth(2)
-                    .expect("FQDN parsed from status URI");
+                    .expect("Should be FQDN parsed from status URI");
                 if !instance_collection.contains_key(base) {
                     // This is a load-bearing comment that prevents the linter from collapsing these statements
                     if queued_servers.insert(base.to_string()) {
@@ -136,7 +136,7 @@ async fn main() -> Result<()> {
                 )};
                 continue;
             }
-            let fetched_statuses = fetched_statuses.expect("Fetched statuses");
+            let fetched_statuses = fetched_statuses.expect("Should be fetched statuses");
             for status in fetched_statuses {
                 Fed::modify_counts(&mut statuses, status);
             }
@@ -144,38 +144,38 @@ async fn main() -> Result<()> {
     }
     let database_key = config
         .get("database")
-        .expect("'database' key in config.toml")
+        .expect("'database' key should be in config.toml")
         .as_table()
-        .expect("'database' value in config.toml to be a table");
+        .expect("'database' value in config.toml should be a table");
     let database_username = database_key
         .get("username")
-        .expect("'username' key in 'database' section of config.toml")
+        .expect("'username' key should be in 'database' section of config.toml")
         .as_str()
-        .expect("'username' value in config.toml is a string");
+        .expect("'username' value in config.toml should be a string");
     let database_password = database_key
         .get("password")
-        .expect("'password' key in 'database' section of config.toml")
+        .expect("'password' key should be in 'database' section of config.toml")
         .as_str()
-        .expect("'password' value in config.toml is a string");
+        .expect("'password' value in config.toml should be a string");
     let database_host = database_key
         .get("host")
-        .expect("'host' key in 'database' section of config.toml")
+        .expect("'host' key should be in 'database' section of config.toml")
         .as_str()
-        .expect("'host' value in config.toml is a string");
+        .expect("'host' value in config.toml should be a string");
     let database_port = database_key
         .get("port")
-        .expect("'port' key in 'database' section of config.toml")
+        .expect("'port' key should be in 'database' section of config.toml")
         .as_integer()
-        .expect("'port' value in config.toml is an integer");
+        .expect("'port' value in config.toml should be an integer");
     let database_name = database_key
         .get("name")
-        .expect("'name' key in 'database' section of config.toml")
+        .expect("'name' key should be in 'database' section of config.toml")
         .as_str()
-        .expect("'name' value in config.toml is a string");
+        .expect("'name' value in config.toml should be a string");
     let database_url = format!("postgres://{database_username}:{database_password}@{database_host}:{database_port}/{database_name}");
     let pool = PgPool::connect(&database_url)
         .await
-        .expect("connection to Postgresql database");
+        .expect("should be a connection to Postgresql database");
     info!("{}", "Inserting or updating statuses".green());
     let mut context_of_statuses = HashMap::new();
     let mut tasks = FuturesUnordered::new();
@@ -252,15 +252,15 @@ impl Fed {
             .client_name("mastodon-async-examples")
             .build()
             .await
-            .expect("Registration");
+            .expect("should be a Registration");
         let mastodon = cli::authenticate(registration)
             .await
-            .expect("Authentication");
+            .expect("should be an Authentication");
         mastodon_async::helpers::toml::to_file(
             &mastodon.data,
             format!("federation/{server}-data.toml"),
         )
-        .expect("Cached data");
+        .expect("should be cached data");
         Ok(mastodon)
     }
 
@@ -286,13 +286,13 @@ impl Fed {
         let server = server.strip_prefix("https://").unwrap_or(server);
         if !instance_collection.contains_key(server) {
             debug!("Registering instance: {server}");
-            let instance = Self::register(server).await.expect("Registered instance");
+            let instance = Self::register(server).await.expect("should be registered instance");
             instance_collection.insert(server.to_string(), instance.clone());
             return instance;
         }
         instance_collection
             .get(server)
-            .expect("Registered instance")
+            .expect("should be registered instance")
             .clone()
     }
 
@@ -311,7 +311,7 @@ impl Fed {
     /// This function returns an error if there is a problem retrieving the current user.
 
     pub async fn me(mastodon: &Mastodon) -> Account {
-        let me = mastodon.verify_credentials().await.expect("Current user");
+        let me = mastodon.verify_credentials().await.expect("should be current user");
         info!("You are logged in as: {}", me.acct);
         me
     }
@@ -348,12 +348,12 @@ impl Fed {
                 );
                 break;
             }
-            let response = response.expect("Trending statuses");
+            let response = response.expect("should be trending statuses");
             if !response.status().is_success() {
                 error!("Error HTTP: {}", response.status());
                 break;
             }
-            let json = response.text().await.expect("Trending statuses");
+            let json = response.text().await.expect("should be trending statuses");
             let json = json.replace(r#""followers_count":-1"#, r#""followers_count":0"#);
             let trending_statuses_raw = serde_json::from_str::<Vec<_>>(&json);
             if trending_statuses_raw.is_err() {
@@ -363,7 +363,7 @@ impl Fed {
                 );
                 break;
             }
-            let trending_statuses: Vec<Status> = trending_statuses_raw.expect("Trending statuses");
+            let trending_statuses: Vec<Status> = trending_statuses_raw.expect("should be trending statuses");
             let length_trending_statuses = trending_statuses.len();
             trends.extend(trending_statuses);
             offset += PAGE;
@@ -405,7 +405,7 @@ impl Fed {
                 let message: String = format!("Status not found by home server: {uri}");
                 return Err(mastodon_async::Error::Other(message));
             }
-            let search_result = search_result.expect("Search result");
+            let search_result = search_result.expect("should be search result");
             if search_result.statuses.is_empty() {
                 let message: String = format!("Status not found by home server: {uri}");
                 return Err(mastodon_async::Error::Other(message));
@@ -519,7 +519,7 @@ impl Fed {
                     return;
                 }
             } else {
-                let record = select_statement.expect("Fetched record from database");
+                let record = select_statement.expect("should be fetched record from database");
                 let old_reblogs_count = record.reblogs_count.try_into().unwrap_or_else(|_| {
                     warn!("Failed to convert reblogs_count to i64");
                     0
@@ -609,7 +609,7 @@ impl Fed {
             warn!("Status not found by home server, skipping: {uri}");
             return context_of_status;
         }
-        let status_id = status_id.expect("Status ID");
+        let status_id = status_id.expect("should be status ID");
 
         if status.reblogs_count == 0
             && status.replies_count.unwrap_or(0) == 0
@@ -660,8 +660,8 @@ impl Fed {
             if status.replies_count.unwrap_or(0) > 0 {
                 info!("Fetching context for status: {uri}");
                 let original_id =
-                    StatusId::new(uri.split('/').last().expect("Status ID").to_string());
-                let original_id_string = uri.split('/').last().expect("Status ID").to_string();
+                    StatusId::new(uri.split('/').last().expect("should be status ID").to_string());
+                let original_id_string = uri.split('/').last().expect("should be status ID").to_string();
                 // If the original ID isn't alphanumeric, it's probably for a non-Mastodon Fediverse server
                 // We can't process these quite yet, so skip them
                 if !original_id_string.chars().all(char::is_alphanumeric) {
@@ -670,20 +670,20 @@ impl Fed {
                 }
                 debug!("Original ID: {original_id}");
                 let base_server = reqwest::Url::parse(uri)
-                    .expect("Status URI")
+                    .expect("should be status URI")
                     .host_str()
-                    .expect("Base server string")
+                    .expect("should be base server string")
                     .to_string();
                 let context = if instance_collection.contains_key(&base_server) {
                     let remote = instance_collection
                         .get(&base_server)
-                        .expect("Mastodon instance");
+                        .expect("should be Mastodon instance");
                     let fetching = remote.get_context(&original_id).await;
                     if fetching.is_err() {
                         error!("Error fetching context");
                         return context_of_status;
                     }
-                    fetching.expect("Context of Status")
+                    fetching.expect("should be Context of Status")
                 } else {
                     let url_string = format!(
                         "https://{base_server}/api/v1/statuses/{original_id_string}/context"
@@ -697,18 +697,18 @@ impl Fed {
                         );
                         return context_of_status;
                     }
-                    let response = response.expect("Context of Status");
+                    let response = response.expect("should be Context of Status");
                     if !response.status().is_success() {
                         error!("{} {}", "Error HTTP:".red(), response.status());
                         return context_of_status;
                     }
-                    let json = response.text().await.expect("Context of Status");
+                    let json = response.text().await.expect("should be Context of Status");
                     let context = serde_json::from_str::<Context>(&json);
                     if let Err(err) = context {
                         error!("{} {err}", "Error JSON:".red());
                         return context_of_status;
                     }
-                    context.expect("Context of Status")
+                    context.expect("should be Context of Status")
                 };
                 info!(
                     "Fetched context for status: {}, ancestors: {}, descendants: {}",
@@ -728,7 +728,7 @@ impl Fed {
                 }
             }
         } else {
-            let record = select_statement.expect("Fetched record from database");
+            let record = select_statement.expect("should be fetched record from database");
             let old_reblogs_count = record.reblogs_count.try_into().unwrap_or_else(|_| {
                 warn!("Failed to convert reblogs_count to i64");
                 0
@@ -778,8 +778,8 @@ impl Fed {
             if status.replies_count.unwrap_or(0) > old_replies_count {
                 info!("Fetching context for status: {uri}");
                 let original_id =
-                    StatusId::new(uri.split('/').last().expect("Status ID").to_string());
-                let original_id_string = uri.split('/').last().expect("Status ID").to_string();
+                    StatusId::new(uri.split('/').last().expect("should be Status ID").to_string());
+                let original_id_string = uri.split('/').last().expect("should be Status ID").to_string();
                 // If the original ID isn't alphanumeric, it's probably for a non-Mastodon Fediverse server
                 // We can't process these quite yet, so skip them
                 if !original_id_string.chars().all(char::is_alphanumeric) {
@@ -788,20 +788,20 @@ impl Fed {
                 }
                 debug!("Original ID: {original_id}");
                 let base_server = reqwest::Url::parse(uri)
-                    .expect("Status URI")
+                    .expect("should be Status URI")
                     .host_str()
-                    .expect("Base server string")
+                    .expect("should be base server string")
                     .to_string();
                 let context = if instance_collection.contains_key(&base_server) {
                     let remote = instance_collection
                         .get(&base_server)
-                        .expect("Mastodon instance");
+                        .expect("should be Mastodon instance");
                     let fetching = remote.get_context(&original_id).await;
                     if fetching.is_err() {
                         error!("Error fetching context");
                         return context_of_status;
                     }
-                    fetching.expect("Context of Status")
+                    fetching.expect("should be Context of Status")
                 } else {
                     let url_string = format!(
                         "https://{base_server}/api/v1/statuses/{original_id_string}/context"
@@ -815,18 +815,18 @@ impl Fed {
                         );
                         return context_of_status;
                     }
-                    let response = response.expect("Context of Status");
+                    let response = response.expect("should be Context of Status");
                     if !response.status().is_success() {
                         error!("{} {}", "Error HTTP:".red(), response.status());
                         return context_of_status;
                     }
-                    let json = response.text().await.expect("Context of Status");
+                    let json = response.text().await.expect("should be Context of Status");
                     let context = serde_json::from_str::<Context>(&json);
                     if let Err(err) = context {
                         error!("{} {err}", "Error JSON:".red());
                         return context_of_status;
                     }
-                    context.expect("Context of Status")
+                    context.expect("should be Context of Status")
                 };
                 info!(
                     "Fetched context for status: {}, ancestors: {}, descendants: {}",
