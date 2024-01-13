@@ -20,12 +20,12 @@ use std::collections::{HashMap, HashSet};
 use mastodon_async::Result;
 
 use colored::Colorize;
+use federation::Federation;
 use futures::stream::FuturesUnordered;
 use futures::StreamExt;
 use sqlx::postgres::PgPool;
 use toml::Table;
 use tracing::{debug, error, info, warn};
-use federation::Federation;
 
 const PAGE: usize = 40;
 const MAX_FUTURES: usize = 15;
@@ -70,7 +70,12 @@ async fn main() -> Result<()> {
     }
     let mut queued_servers: HashSet<String> = HashSet::new();
     for server in config_servers_unauthenticated_strings {
-        queued_servers.insert(server.as_str().expect("Server should be a string").to_string());
+        queued_servers.insert(
+            server
+                .as_str()
+                .expect("Server should be a string")
+                .to_string(),
+        );
     }
     let mut statuses = HashMap::new();
     info!("{}", "Fetching trending statuses".green().to_string());
@@ -83,7 +88,10 @@ async fn main() -> Result<()> {
             tasks_remaining -= 1;
             let remote = &instance_collection_vec[current_instance_index];
             info! {"{}", format!("Fetching trending statuses from {}", remote.1.data.base)};
-            tasks.push(Federation::fetch_trending_statuses(&remote.1.data.base, PAGE * 3));
+            tasks.push(Federation::fetch_trending_statuses(
+                &remote.1.data.base,
+                PAGE * 3,
+            ));
             current_instance_index += 1;
         }
 

@@ -59,7 +59,9 @@ impl Federation {
         let server = server.strip_prefix("https://").unwrap_or(server);
         if !instance_collection.contains_key(server) {
             debug!("Registering instance: {server}");
-            let instance = Self::register(server).await.expect("should be registered instance");
+            let instance = Self::register(server)
+                .await
+                .expect("should be registered instance");
             instance_collection.insert(server.to_string(), instance.clone());
             return instance;
         }
@@ -84,7 +86,10 @@ impl Federation {
     /// This function returns an error if there is a problem retrieving the current user.
 
     pub async fn me(mastodon: &Mastodon) -> Account {
-        let me = mastodon.verify_credentials().await.expect("should be current user");
+        let me = mastodon
+            .verify_credentials()
+            .await
+            .expect("should be current user");
         info!("You are logged in as: {}", me.acct);
         me
     }
@@ -136,7 +141,8 @@ impl Federation {
                 );
                 break;
             }
-            let trending_statuses: Vec<Status> = trending_statuses_raw.expect("should be trending statuses");
+            let trending_statuses: Vec<Status> =
+                trending_statuses_raw.expect("should be trending statuses");
             let length_trending_statuses = trending_statuses.len();
             trends.extend(trending_statuses);
             offset += PAGE;
@@ -432,9 +438,17 @@ impl Federation {
             }
             if status.replies_count.unwrap_or(0) > 0 {
                 info!("Fetching context for status: {uri}");
-                let original_id =
-                    StatusId::new(uri.split('/').last().expect("should be status ID").to_string());
-                let original_id_string = uri.split('/').last().expect("should be status ID").to_string();
+                let original_id = StatusId::new(
+                    uri.split('/')
+                        .last()
+                        .expect("should be status ID")
+                        .to_string(),
+                );
+                let original_id_string = uri
+                    .split('/')
+                    .last()
+                    .expect("should be status ID")
+                    .to_string();
                 // If the original ID isn't alphanumeric, it's probably for a non-Mastodon Fediverse server
                 // We can't process these quite yet, so skip them
                 if !original_id_string.chars().all(char::is_alphanumeric) {
@@ -550,9 +564,17 @@ impl Federation {
             }
             if status.replies_count.unwrap_or(0) > old_replies_count {
                 info!("Fetching context for status: {uri}");
-                let original_id =
-                    StatusId::new(uri.split('/').last().expect("should be Status ID").to_string());
-                let original_id_string = uri.split('/').last().expect("should be Status ID").to_string();
+                let original_id = StatusId::new(
+                    uri.split('/')
+                        .last()
+                        .expect("should be Status ID")
+                        .to_string(),
+                );
+                let original_id_string = uri
+                    .split('/')
+                    .last()
+                    .expect("should be Status ID")
+                    .to_string();
                 // If the original ID isn't alphanumeric, it's probably for a non-Mastodon Fediverse server
                 // We can't process these quite yet, so skip them
                 if !original_id_string.chars().all(char::is_alphanumeric) {
