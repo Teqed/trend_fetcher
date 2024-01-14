@@ -185,17 +185,7 @@ async fn main() -> Result<(), ()> {
             }
         }
     }
-    // let pool = PgPool::connect(&format!(
-    //     "postgres://{database_username}:{database_password}@{database_host}:{database_port}/{database_name}",
-    //     database_username = config.database.username,
-    //     database_password = config.database.password,
-    //     database_host = config.database.host,
-    //     database_port = config.database.port,
-    //     database_name = config.database.name
-    // ))
-    //     .await
-    //     .expect("should be a connection to Postgresql database");
-    let pool = match PgPool::connect(&format!(
+    let pool = PgPool::connect(&format!(
         "postgres://{database_username}:{database_password}@{database_host}:{database_port}/{database_name}",
         database_username = config.database.username,
         database_password = config.database.password,
@@ -203,13 +193,8 @@ async fn main() -> Result<(), ()> {
         database_port = config.database.port,
         database_name = config.database.name
     ))
-        .await {
-        Ok(pool) => pool,
-        Err(error) => {
-            error!("{}", format!("Error connecting to database: {}", error));
-            return Err(());
-        }
-    };
+        .await
+        .expect("should be a connection to Postgresql database");
     info!("{}", "Inserting or updating statuses".green());
     let mut context_of_statuses = HashMap::new();
     let mut tasks_2 = FuturesUnordered::new();
