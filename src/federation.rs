@@ -211,7 +211,7 @@ impl Federation {
         statuses
             .entry(status.uri.clone())
             .and_modify(|existing_status: &mut Status| {
-                debug!(
+                warn!(
                     "Duplicate status, Reb: {:?}, Rep: {:?}, Fav: {:?}",
                     existing_status.reblogs_count,
                     existing_status.replies_count.unwrap_or(0),
@@ -235,27 +235,22 @@ impl Federation {
     /// * `status` - The status to add.
     /// * `pool` - The database connection pool.
     /// * `home_server` - The home server.
-    ///
-    /// # Panics
-    ///
-    /// This function panics if the status is not found in the database.
-
     pub async fn add_context_status(
         statuses: &HashMap<String, Status>,
         status: Status,
         pool: &PgPool,
         home_server: &Mastodon,
-    ) {
+    ) -> Result<()> {
         if statuses.contains_key(&status.uri) {
             debug!("Status already exists, skipping: {}", status.uri);
-            return;
+            return Ok(());
         }
         if status.reblogs_count == 0
             && status.replies_count.unwrap_or(0) == 0
             && status.favourites_count == 0
         {
             debug!("Status has no interactions, skipping: {}", status.uri);
-            return;
+            return Ok(());
         }
         if let Ok(status_id) = Self::find_status_id(&status.uri, pool, home_server).await {
             debug!("Status found in database: {}", status.uri);
@@ -298,7 +293,7 @@ impl Federation {
                 let insert_statement = insert_statement.execute(pool).await;
                 if let Err(err) = insert_statement {
                     error!("Error inserting status: {err}");
-                    return;
+                    return Ok(());
                 }
             } else {
                 let record = select_statement.expect("should be fetched record from database");
@@ -320,7 +315,7 @@ impl Federation {
                     && (status.favourites_count <= old_favourites_count)
                 {
                     debug!("Status found in status_stats table, but we have smaller counts, skipping: {}", status.uri);
-                    return;
+                    return Ok(());
                 }
                 info!(
                     "Status found in status_stats table, updating it: {}",
@@ -353,13 +348,14 @@ impl Federation {
                 let update_statement = update_statement.execute(pool).await;
                 if let Err(err) = update_statement {
                     error!("Error updating status: {err}");
-                    return;
+                    return Ok(());
                 }
             }
             info!("{} {}", "Status found OK!".green(), status.uri);
         } else {
             debug!("Status not found in database: {}", status.uri);
         }
+        Ok(())
     }
 
     /// Fetches a status from the specified URI.
@@ -378,18 +374,17 @@ impl Federation {
     /// This function panics if the status is not found in the database.
 
     pub async fn fetch_status(
-        uri: &str,
         status: &Status,
         pool: &PgPool,
         home_server: &Mastodon,
         instance_collection: &HashMap<String, Mastodon>,
-    ) -> HashMap<String, Status> {
-        info!("Status: {uri}");
-        let status_id = Self::find_status_id(uri, pool, home_server).await;
+    ) -> Result<HashMap<String, Status>> {
+        info!("Status: {}", &status.uri);
+        let status_id = Self::find_status_id(&status.uri, pool, home_server).await;
         let mut context_of_status = HashMap::new();
         if status_id.is_err() {
-            warn!("Status not found by home server, skipping: {uri}");
-            return context_of_status;
+            warn!("Status not found by home server, skipping: {}", &status.uri);
+            return Ok(context_of_status);
         }
         let status_id = status_id.expect("should be status ID");
 
@@ -397,10 +392,10 @@ impl Federation {
             && status.replies_count.unwrap_or(0) == 0
             && status.favourites_count == 0
         {
-            debug!("Status has no interactions, skipping: {uri}");
-            return context_of_status;
+            debug!("Status has no interactions, skipping: {}", &status.uri);
+            return Ok(context_of_status);
         }
-        debug!("Status found in database: {uri}");
+        debug!("Status found in database: {}", &status.uri);
         let select_statement = sqlx::query!(
             r#"SELECT id, reblogs_count, replies_count, favourites_count FROM status_stats WHERE status_id = $1"#,
             status_id
@@ -411,7 +406,7 @@ impl Federation {
         let current_time =
             time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
         if select_statement.is_err() {
-            info!("Status not found in status_stats table, inserting it: {uri}");
+            info!("Status not found in status_stats table, inserting it: {}", &status.uri);
             let insert_statement = sqlx::query!(
                 r#"INSERT INTO status_stats (status_id, reblogs_count, replies_count, favourites_count, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"#,
                 status_id,
@@ -437,17 +432,17 @@ impl Federation {
             let insert_statement = insert_statement.execute(pool).await;
             if let Err(err) = insert_statement {
                 error!("Error inserting status: {err}");
-                return context_of_status;
+                return Ok(context_of_status);
             }
             if status.replies_count.unwrap_or(0) > 0 {
-                info!("Fetching context for status: {uri}");
+                info!("Fetching context for status: {}", &status.uri);
                 let original_id = StatusId::new(
-                    uri.split('/')
+                    status.uri.split('/')
                         .last()
                         .expect("should be status ID")
                         .to_string(),
                 );
-                let original_id_string = uri
+                let original_id_string = &status.uri
                     .split('/')
                     .last()
                     .expect("should be status ID")
@@ -456,10 +451,10 @@ impl Federation {
                 // We can't process these quite yet, so skip them
                 if !original_id_string.chars().all(char::is_alphanumeric) {
                     warn!("Original ID is not alphanumeric, skipping: {original_id}");
-                    return context_of_status;
+                    return Ok(context_of_status);
                 }
                 debug!("Original ID: {original_id}");
-                let base_server = reqwest::Url::parse(uri)
+                let base_server = reqwest::Url::parse(&status.uri)
                     .expect("should be status URI")
                     .host_str()
                     .expect("should be base server string")
@@ -471,7 +466,7 @@ impl Federation {
                     let fetching = remote.get_context(&original_id).await;
                     if fetching.is_err() {
                         error!("Error fetching context");
-                        return context_of_status;
+                        return Ok(context_of_status);
                     }
                     fetching.expect("should be Context of Status")
                 } else {
@@ -485,24 +480,24 @@ impl Federation {
                             "Error HTTP:".red(),
                             response.expect_err("Context of Status")
                         );
-                        return context_of_status;
+                        return Ok(context_of_status);
                     }
                     let response = response.expect("should be Context of Status");
                     if !response.status().is_success() {
                         error!("{} {}", "Error HTTP:".red(), response.status());
-                        return context_of_status;
+                        return Ok(context_of_status);
                     }
                     let json = response.text().await.expect("should be Context of Status");
                     let context = serde_json::from_str::<Context>(&json);
                     if let Err(err) = context {
                         error!("{} {err}", "Error JSON:".red());
-                        return context_of_status;
+                        return Ok(context_of_status);
                     }
                     context.expect("should be Context of Status")
                 };
                 info!(
                     "Fetched context for status: {}, ancestors: {}, descendants: {}",
-                    uri,
+                    &status.uri,
                     context.ancestors.len(),
                     context.descendants.len()
                 );
@@ -535,10 +530,10 @@ impl Federation {
                 && (status.replies_count.unwrap_or(0) <= old_replies_count)
                 && (status.favourites_count <= old_favourites_count)
             {
-                debug!("Status found in status_stats table, but we don't have larger counts, skipping: {uri}");
-                return context_of_status;
+                debug!("Status found in status_stats table, but we don't have larger counts, skipping: {}", &status.uri);
+                return Ok(context_of_status);
             }
-            info!("Status found in status_stats table, updating it: {uri}");
+            info!("Status found in status_stats table, updating it: {}", &status.uri);
             let update_statement = sqlx::query!(
                 r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
                 status.reblogs_count.try_into().unwrap_or_else(|_| {
@@ -563,17 +558,17 @@ impl Federation {
             let update_statement = update_statement.execute(pool).await;
             if let Err(err) = update_statement {
                 error!("Error updating status: {err}");
-                return context_of_status;
+                return Ok(context_of_status);
             }
             if status.replies_count.unwrap_or(0) > old_replies_count {
-                info!("Fetching context for status: {uri}");
+                info!("Fetching context for status: {}", &status.uri);
                 let original_id = StatusId::new(
-                    uri.split('/')
+                    status.uri.split('/')
                         .last()
                         .expect("should be Status ID")
                         .to_string(),
                 );
-                let original_id_string = uri
+                let original_id_string = &status.uri
                     .split('/')
                     .last()
                     .expect("should be Status ID")
@@ -582,10 +577,10 @@ impl Federation {
                 // We can't process these quite yet, so skip them
                 if !original_id_string.chars().all(char::is_alphanumeric) {
                     warn!("Original ID is not alphanumeric, skipping: {original_id}");
-                    return context_of_status;
+                    return Ok(context_of_status);
                 }
                 debug!("Original ID: {original_id}");
-                let base_server = reqwest::Url::parse(uri)
+                let base_server = reqwest::Url::parse(&status.uri)
                     .expect("should be Status URI")
                     .host_str()
                     .expect("should be base server string")
@@ -597,7 +592,7 @@ impl Federation {
                     let fetching = remote.get_context(&original_id).await;
                     if fetching.is_err() {
                         error!("Error fetching context");
-                        return context_of_status;
+                        return Ok(context_of_status);
                     }
                     fetching.expect("should be Context of Status")
                 } else {
@@ -611,24 +606,24 @@ impl Federation {
                             "Error HTTP:".red(),
                             response.expect_err("Context of Status")
                         );
-                        return context_of_status;
+                        return Ok(context_of_status);
                     }
                     let response = response.expect("should be Context of Status");
                     if !response.status().is_success() {
                         error!("{} {}", "Error HTTP:".red(), response.status());
-                        return context_of_status;
+                        return Ok(context_of_status);
                     }
                     let json = response.text().await.expect("should be Context of Status");
                     let context = serde_json::from_str::<Context>(&json);
                     if let Err(err) = context {
                         error!("{} {err}", "Error JSON:".red());
-                        return context_of_status;
+                        return Ok(context_of_status);
                     }
                     context.expect("should be Context of Status")
                 };
                 info!(
                     "Fetched context for status: {}, ancestors: {}, descendants: {}",
-                    uri,
+                    &status.uri,
                     context.ancestors.len(),
                     context.descendants.len()
                 );
@@ -644,7 +639,7 @@ impl Federation {
                 }
             }
         }
-        info!("{}", format!("Fetched {uri} OK!").green());
-        context_of_status
+        info!("{}", format!("Fetched {} OK!", &status.uri).green());
+        Ok(context_of_status)
     }
 }
