@@ -211,7 +211,7 @@ impl Federation {
         statuses
             .entry(status.uri.clone())
             .and_modify(|existing_status: &mut Status| {
-                warn!(
+                debug!(
                     "Duplicate status, Reb: {:?}, Rep: {:?}, Fav: {:?}",
                     existing_status.reblogs_count,
                     existing_status.replies_count.unwrap_or(0),
