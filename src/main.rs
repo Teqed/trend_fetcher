@@ -102,11 +102,11 @@ const MAX_FUTURES: usize = 15;
 /// * `Vec<T>` - The results of processing the iterator.
 async fn process_concurrently<I, TI, TO, E, F, Fut>(iter: I, processor: F, limit: usize) -> Result<Vec<TO>, E>
 where
-    I: IntoIterator<Item = TI> + Send, // Add the Send trait to I.
-    I::IntoIter: Send, // Add the Send trait to the associated type IntoIter of IntoIterator.
-    TI: Send + 'static, // Type of items in the iterator.
-    TO: Send + 'static, // Type of output items that the processing function returns.
-    F: Fn(TI) -> Fut + Copy + Send, // Add the Send trait to F.
+    I: IntoIterator<Item = TI> + Send,
+    I::IntoIter: Send,
+    TI: Send + 'static,
+    TO: Send + 'static,
+    F: Fn(TI) -> Fut + Copy + Send,
     Fut: std::future::Future<Output = Result<TO, E>> + Send,
     E: std::fmt::Debug + Send + 'static,
 {
@@ -116,7 +116,7 @@ where
         .collect::<Vec<_>>()
         .await
         .into_iter()
-        .collect::<Result<Vec<_>, _>>() // Collect results, handling errors
+        .collect::<Result<Vec<_>, _>>()
 }
 
 #[tokio::main]
@@ -125,172 +125,69 @@ where
 async fn main() -> Result<(), ()> {
     debug!("Starting");
     if false { error!("This is an error"); }
-    let subscriber = tracing_subscriber::FmtSubscriber::new();
-    tracing::subscriber::set_global_default(subscriber).expect("should be default subscriber");
+    tracing::subscriber::set_global_default(tracing_subscriber::FmtSubscriber::new()).expect("should be default subscriber");
     let start = time::OffsetDateTime::now_utc();
     let mut instance_collection = HashMap::new();
     let config = configuration::load_config();
+    let mut queued_servers: HashSet<String> = HashSet::new();
     let home_server =
         Federation::get_instance(&mut instance_collection, &config.servers.home).await;
     for server in config.servers.authenticated {
         Federation::get_instance(&mut instance_collection, &server).await;
+        queued_servers.insert(server);
     }
-    let mut queued_servers: HashSet<String> = HashSet::new();
     for server in config.servers.unauthenticated {
         queued_servers.insert(server);
     }
     info!("{}", "Fetching trending statuses".green().to_string());
-    let trending_statuses = process_concurrently(
-        instance_collection.keys().cloned(), // Clone the keys (base URLs) from the instance_collection.
-        |base| {
-            let base_clone = base; // Clone base to move into the async block.
-            async move {
-                Federation::fetch_trending_statuses(&base_clone, PAGE).await
-            }
-        },
-        MAX_FUTURES,
-    )
-    .await
-    .expect("Error fetching trending statuses");
-    let mut trending_statuses_hashmap = {
-        let mut trending_statuses_hashmap = HashMap::new();
-        for status in trending_statuses.into_iter().flatten() {
-            let base = status
-                .uri
-                .split('/')
-                .nth(2)
-                .expect("Should be FQDN parsed from status URI");
-            if !instance_collection.contains_key(base) {
-                // This is a load-bearing comment that prevents the linter from collapsing these statements
-                if queued_servers.insert(base.to_string()) {
-                    info! {"{}", format!("Queued server: {base}")};
+    let mut trending_statuses = HashMap::new();
+    let mut fetched_servers = HashSet::new();
+    while !queued_servers.is_empty() {
+        info!("Queued servers: {}", queued_servers.len());
+        info!(
+            "{}",
+            "Fetching trending statuses from queued servers".green()
+        );
+        let fetched_trending_statuses_vec = process_concurrently(
+            queued_servers.iter().cloned(),
+            |server| {
+                async move {
+                    Federation::fetch_trending_statuses(&server, PAGE * 3).await
                 }
-            }
-            Federation::modify_counts(&mut trending_statuses_hashmap, status);
-        }
-        trending_statuses_hashmap
-    };
-
-
-    info!("Total statuses: {}", trending_statuses_hashmap.len());
-    info!("Queued servers: {}", queued_servers.len());
-    info!(
-        "{}",
-        "Fetching trending statuses from queued servers".green()
-    );
-    let aux_trending_statuses = process_concurrently(
-        queued_servers.iter().cloned(),
-        |server| {
-            async move {
-                Federation::fetch_trending_statuses(&server, PAGE * 3).await
-            }
-        },
-        MAX_FUTURES,
-    )
-    .await
-    .expect("Error fetching trending statuses from queued servers");
-    let mut aux_queued_servers = HashSet::new();
-    let aux_trending_statuses_hashmap = {
-        let mut aux_trending_statuses_hashmap = HashMap::new();
-        for status in aux_trending_statuses.into_iter().flatten() {
-            let base = status
-                .uri
-                .split('/')
-                .nth(2)
-                .expect("Should be FQDN parsed from status URI");
-            if !instance_collection.contains_key(base) & !queued_servers.contains(base) {
-                // This is a load-bearing comment that prevents the linter from collapsing these statements
-                if aux_queued_servers.insert(base.to_string()) {
-                    info! {"{}", format!("Queued server: {base}")};
+            },
+            MAX_FUTURES,
+        )
+        .await
+        .expect("Error fetching trending statuses from queued servers");
+        fetched_servers.extend(queued_servers.iter().cloned());
+        queued_servers.clear();
+        let aux_trending_statuses_hashmap = {
+            let mut fetched_trending_statuses = HashMap::new();
+            for status in fetched_trending_statuses_vec.into_iter().flatten() {
+                let base = status
+                    .uri
+                    .split('/')
+                    .nth(2)
+                    .expect("Should be FQDN parsed from status URI");
+                if !fetched_servers.contains(base) {
+                    // This is a load-bearing comment that prevents the linter from collapsing these statements
+                    if queued_servers.insert(base.to_string()) {
+                        info! {"{}", format!("Queued server: {base}")};
+                    }
                 }
+                Federation::modify_counts(&mut fetched_trending_statuses, status);
             }
-            Federation::modify_counts(&mut aux_trending_statuses_hashmap, status);
+            fetched_trending_statuses
+        };
+        for (key, value) in aux_trending_statuses_hashmap {
+            if let std::collections::hash_map::Entry::Vacant(e) = trending_statuses.entry(key) {
+                e.insert(value);
+            } else {
+                Federation::modify_counts(&mut trending_statuses, value);
+            }
         }
-        aux_trending_statuses_hashmap
     };
-    let aux_aux_trending_statuses = process_concurrently(
-        aux_queued_servers.iter().cloned(),
-        |server| {
-            async move {
-                Federation::fetch_trending_statuses(&server, PAGE * 3).await
-            }
-        },
-        MAX_FUTURES,
-    )
-    .await
-    .expect("Error fetching trending statuses from queued servers");
-    let mut aux_aux_queued_servers = HashSet::new();
-    let aux_aux_trending_statuses_hashmap = {
-        let mut aux_aux_trending_statuses_hashmap = HashMap::new();
-        for status in aux_aux_trending_statuses.into_iter().flatten() {
-            let base = status
-                .uri
-                .split('/')
-                .nth(2)
-                .expect("Should be FQDN parsed from status URI");
-            if !instance_collection.contains_key(base) & !queued_servers.contains(base) & !aux_queued_servers.contains(base) {
-                // This is a load-bearing comment that prevents the linter from collapsing these statements
-                if aux_aux_queued_servers.insert(base.to_string()) {
-                    info! {"{}", format!("Queued server: {base}")};
-                }
-            }
-            Federation::modify_counts(&mut aux_aux_trending_statuses_hashmap, status);
-        }
-        aux_aux_trending_statuses_hashmap
-    };
-    let aux_aux_aux_trending_statuses = process_concurrently(
-        aux_aux_queued_servers.iter().cloned(),
-        |server| {
-            async move {
-                Federation::fetch_trending_statuses(&server, PAGE * 3).await
-            }
-        },
-        MAX_FUTURES,
-    )
-    .await
-    .expect("Error fetching trending statuses from queued servers");
-    let mut aux_aux_aux_queued_servers = HashSet::new();
-    let aux_aux_aux_trending_statuses_hashmap = {
-        let mut aux_aux_aux_trending_statuses_hashmap = HashMap::new();
-        for status in aux_aux_aux_trending_statuses.into_iter().flatten() {
-            let base = status
-                .uri
-                .split('/')
-                .nth(2)
-                .expect("Should be FQDN parsed from status URI");
-            if !instance_collection.contains_key(base) & !queued_servers.contains(base) & !aux_queued_servers.contains(base) & !aux_aux_queued_servers.contains(base) {
-                // This is a load-bearing comment that prevents the linter from collapsing these statements
-                if aux_aux_aux_queued_servers.insert(base.to_string()) {
-                    info! {"{}", format!("Queued server: {base}")};
-                }
-            }
-            Federation::modify_counts(&mut aux_aux_aux_trending_statuses_hashmap, status);
-        }
-        aux_aux_aux_trending_statuses_hashmap
-    };
-    // Combine the trending statuses from all servers into one hashmap.
-    // When we find a status that already exists in the hashmap, use ModifyCounts to add the counts from the new status to the existing status.
-    for (key, value) in aux_trending_statuses_hashmap {
-        if let std::collections::hash_map::Entry::Vacant(e) = trending_statuses_hashmap.entry(key) {
-            e.insert(value);
-        } else {
-            Federation::modify_counts(&mut trending_statuses_hashmap, value);
-        }
-    }
-    for (key, value) in aux_aux_trending_statuses_hashmap {
-        if let std::collections::hash_map::Entry::Vacant(e) = trending_statuses_hashmap.entry(key) {
-            e.insert(value);
-        } else {
-            Federation::modify_counts(&mut trending_statuses_hashmap, value);
-        }
-    }
-    for (key, value) in aux_aux_aux_trending_statuses_hashmap {
-        if let std::collections::hash_map::Entry::Vacant(e) = trending_statuses_hashmap.entry(key) {
-            e.insert(value);
-        } else {
-            Federation::modify_counts(&mut trending_statuses_hashmap, value);
-        }
-    }
+    info!("Total statuses: {}", trending_statuses.len());
 
     let pool = PgPool::connect(&format!(
         "postgres://{database_username}:{database_password}@{database_host}:{database_port}/{database_name}",
@@ -304,7 +201,7 @@ async fn main() -> Result<(), ()> {
         .expect("should be a connection to Postgresql database");
     info!("{}", "Inserting or updating statuses".green());
     let context_statuses = process_concurrently(
-        trending_statuses_hashmap.clone().into_iter(),
+        trending_statuses.clone().into_iter(),
         |(_, status)| {
             let pool = pool.clone();
             let home_server = home_server.clone();
@@ -331,7 +228,7 @@ async fn main() -> Result<(), ()> {
     info! {"{}", format!("Fetching {context_statuses_length} statuses found by context").green()};
     process_concurrently(
         context_statuses.clone().into_iter(),
-        |(_, status)| Federation::add_context_status(&trending_statuses_hashmap, status, &pool, &home_server),
+        |(_, status)| Federation::add_context_status(&trending_statuses, status, &pool, &home_server),
         MAX_FUTURES,
     )
     .await
@@ -339,7 +236,7 @@ async fn main() -> Result<(), ()> {
     .into_iter();
 
     info!("{}", "All OK!".green());
-    info!("We saw {} trending statuses", trending_statuses_hashmap.len());
+    info!("We saw {} trending statuses", trending_statuses.len());
     info!("We saw {} context statuses", context_statuses.len());
     let end = time::OffsetDateTime::now_utc();
     let duration = end - start;
