@@ -84,10 +84,12 @@ mod federation;
 /// The configuration module provides functions for loading the configuration.
 mod configuration;
 
-/// The number of statuses to fetch per page. This is the maximum number of statuses that can be fetched per page, defined by the Mastodon API.
+/// The number of statuses to fetch per page, a maximum defined by the Mastodon API.
 const PAGE: usize = 40;
 /// The maximum number of futures to run concurrently.
 const MAX_FUTURES: usize = 15;
+/// The maximum number of pages to fetch.
+const PAGES_TO_FETCH: usize = 6;
 
 /// Processes an iterator concurrently.
 /// 
@@ -152,7 +154,7 @@ async fn main() -> Result<(), ()> {
             queued_servers.iter().cloned(),
             |server| {
                 async move {
-                    Federation::fetch_trending_statuses(&server, PAGE * 3).await
+                    Federation::fetch_trending_statuses(&server, PAGE * PAGES_TO_FETCH).await
                 }
             },
             MAX_FUTURES,
