@@ -1,0 +1,17 @@
+[database]
+    username = "mastodon"
+    password = "mastodon"
+    host = "localhost"
+    port = 5432
+    name = "mastodon_production"
+
+[servers]
+    home = "mastodon.example.com"
+
+    authenticated = [
+        "mastodon.example.com",
+    ]
+
+    unauthenticated = [
+        "mastodon.example.com",
+    ]
