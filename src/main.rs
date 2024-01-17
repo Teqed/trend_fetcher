@@ -251,7 +251,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut context_statuses_hashmap = HashMap::new();
     for status_hashmap in context_statuses {
         for (key, value) in status_hashmap {
-            context_statuses_hashmap.insert(key, value);
+            context_statuses_hashmap.entry(key).or_insert(value);
         }
     }
 
