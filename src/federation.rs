@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
 
+use crate::PAGE;
+use async_recursion::async_recursion;
 use colored::Colorize;
 use sqlx::postgres::PgPool;
 use tracing::{debug, error, info, warn};
-use async_recursion::async_recursion;
-use crate::PAGE;
 
 /// Struct for interacting with Fediverse APIs.
 pub struct Federation;
@@ -196,7 +196,10 @@ impl Federation {
         let current_time =
             time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
         if select_statement.is_err() {
-            info!("Status not found in status_stats table, inserting it: {}", &status.uri);
+            info!(
+                "Status not found in status_stats table, inserting it: {}",
+                &status.uri
+            );
             let insert_statement = sqlx::query!(
                 r#"INSERT INTO status_stats (status_id, reblogs_count, replies_count, favourites_count, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"#,
                 status_id,
@@ -227,12 +230,15 @@ impl Federation {
             if status.replies_count.unwrap_or(0) > 0 {
                 info!("Fetching context for status: {}", &status.uri);
                 let original_id = StatusId::new(
-                    status.uri.split('/')
+                    status
+                        .uri
+                        .split('/')
                         .last()
                         .expect("should be status ID")
                         .to_string(),
                 );
-                let original_id_string = &status.uri
+                let original_id_string = &status
+                    .uri
                     .split('/')
                     .last()
                     .expect("should be status ID")
@@ -323,25 +329,37 @@ impl Federation {
                 debug!("Status found in status_stats table, but we don't have larger counts, skipping: {}", &status.uri);
                 return Ok(context_of_status);
             }
-            info!("Status found in status_stats table, updating it: {}", &status.uri);
+            info!(
+                "Status found in status_stats table, updating it: {}",
+                &status.uri
+            );
             let update_statement = sqlx::query!(
                 r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
-                std::cmp::max(status.reblogs_count.try_into().unwrap_or_else(|_| {
-                    warn!("Failed to convert reblogs_count to i64");
-                    0
-                }), record.replies_count),
-                std::cmp::max(status
-                    .replies_count
-                    .unwrap_or(0)
-                    .try_into()
-                    .unwrap_or_else(|_| {
-                        warn!("Failed to convert replies_count to i64");
+                std::cmp::max(
+                    status.reblogs_count.try_into().unwrap_or_else(|_| {
+                        warn!("Failed to convert reblogs_count to i64");
                         0
-                    }), record.replies_count),
-                std::cmp::max(status.favourites_count.try_into().unwrap_or_else(|_| {
-                    warn!("Failed to convert favourites_count to i64");
-                    0
-                }), record.favourites_count),
+                    }),
+                    record.replies_count
+                ),
+                std::cmp::max(
+                    status
+                        .replies_count
+                        .unwrap_or(0)
+                        .try_into()
+                        .unwrap_or_else(|_| {
+                            warn!("Failed to convert replies_count to i64");
+                            0
+                        }),
+                    record.replies_count
+                ),
+                std::cmp::max(
+                    status.favourites_count.try_into().unwrap_or_else(|_| {
+                        warn!("Failed to convert favourites_count to i64");
+                        0
+                    }),
+                    record.favourites_count
+                ),
                 current_time,
                 status_id
             );
@@ -353,12 +371,15 @@ impl Federation {
             if status.replies_count.unwrap_or(0) > old_replies_count {
                 info!("Fetching context for status: {}", &status.uri);
                 let original_id = StatusId::new(
-                    status.uri.split('/')
+                    status
+                        .uri
+                        .split('/')
                         .last()
                         .expect("should be Status ID")
                         .to_string(),
                 );
-                let original_id_string = &status.uri
+                let original_id_string = &status
+                    .uri
                     .split('/')
                     .last()
                     .expect("should be Status ID")
@@ -418,7 +439,13 @@ impl Federation {
                     context.descendants.len()
                 );
                 for ancestor_status in context.ancestors {
-                    let _ = Self::fetch_status(&ancestor_status, pool, home_server, instance_collection).await;
+                    let _ = Self::fetch_status(
+                        &ancestor_status,
+                        pool,
+                        home_server,
+                        instance_collection,
+                    )
+                    .await;
                 }
                 for descendant_status in context.descendants {
                     let _ = Self::fetch_status(
@@ -426,7 +453,8 @@ impl Federation {
                         pool,
                         home_server,
                         instance_collection,
-                    ).await;
+                    )
+                    .await;
                 }
             }
         }

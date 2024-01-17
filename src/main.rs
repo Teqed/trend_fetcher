@@ -72,15 +72,15 @@
 #![allow(clippy::multiple_crate_versions, clippy::too_many_lines)]
 #![forbid(unsafe_code)]
 
-use std::collections::{HashMap, HashSet};
 use colored::Colorize;
 use federation::Federation;
 use futures::stream::{self, StreamExt};
-use sqlx::postgres::PgPool;
-use tracing::{debug, error, info, warn};
-use std::error::Error;
 use serde::Deserialize;
+use sqlx::postgres::PgPool;
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
 use std::fs;
+use tracing::{debug, error, info, warn};
 
 #[derive(Deserialize)]
 /// Configuration struct for the application.
@@ -132,29 +132,39 @@ const PAGES_TO_FETCH: usize = 6;
 async fn main() -> Result<(), Box<dyn Error>> {
     let start = time::OffsetDateTime::now_utc();
     debug!("Starting at {start}");
-    tracing::subscriber::set_global_default(tracing_subscriber::FmtSubscriber::new()).expect("should be default subscriber");
+    tracing::subscriber::set_global_default(tracing_subscriber::FmtSubscriber::new())
+        .expect("should be default subscriber");
     let mut instance_collection = HashMap::new();
     let config: Config = match fs::read_to_string("config.toml") {
-        Ok(config) => {
-            match toml::from_str(&config) {
-                Ok(config) => config,
-                Err(e) => {
-                    error!("{}", "Error loading configuration. Please ensure that the configuration file is valid TOML".to_string().red());
-                    error!("{}", "See the example configuration file `config.toml.example` for more information on required fields".to_string().red());
-                    error!("{}", format!("{}", e.to_string().red()));
-                    return Err(e.into());
-                }
+        Ok(config) => match toml::from_str(&config) {
+            Ok(config) => config,
+            Err(e) => {
+                error!("{}", "Error loading configuration. Please ensure that the configuration file is valid TOML".to_string().red());
+                error!("{}", "See the example configuration file `config.toml.example` for more information on required fields".to_string().red());
+                error!("{}", format!("{}", e.to_string().red()));
+                return Err(e.into());
             }
-        }
+        },
         Err(e) => {
-            error!("{}", "Error loading configuration. Please ensure that the configuration file exists".to_string().red());
-            error!("{}", "See the example configuration file `config.toml.example`".to_string().red());
+            error!(
+                "{}",
+                "Error loading configuration. Please ensure that the configuration file exists"
+                    .to_string()
+                    .red()
+            );
+            error!(
+                "{}",
+                "See the example configuration file `config.toml.example`"
+                    .to_string()
+                    .red()
+            );
             error!("{}", format!("{}", e.to_string().red()));
             return Err(e.into());
         }
     };
     let mut queued_servers: HashSet<String> = HashSet::new();
-    let home_server = Federation::get_instance(&mut instance_collection, &config.servers.home).await;
+    let home_server =
+        Federation::get_instance(&mut instance_collection, &config.servers.home).await;
     for server in config.servers.authenticated {
         Federation::get_instance(&mut instance_collection, &server).await;
         queued_servers.insert(server);
@@ -172,10 +182,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "Fetching trending statuses from queued servers".green()
         );
         let fetched_trending_statuses_vec = stream::iter(queued_servers.iter().cloned())
-            .map(|server| {
-                async move {
-                    Federation::fetch_trending_statuses(&server, PAGE * PAGES_TO_FETCH).await
-                }
+            .map(|server| async move {
+                Federation::fetch_trending_statuses(&server, PAGE * PAGES_TO_FETCH).await
             })
             .buffer_unordered(MAX_FUTURES)
             .collect::<Vec<_>>()
@@ -210,7 +218,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Federation::modify_counts(&mut trending_statuses, value);
             }
         }
-    };
+    }
     info!("Total statuses: {}", trending_statuses.len());
 
     let pool = PgPool::connect(&format!(
@@ -230,13 +238,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let home_server = home_server.clone();
             let instance_collection = instance_collection.clone();
             async move {
-                Federation::fetch_status(
-                    &status,
-                    &pool,
-                    &home_server,
-                    &instance_collection,
-                )
-                .await
+                Federation::fetch_status(&status, &pool, &home_server, &instance_collection).await
             }
         })
         .buffer_unordered(MAX_FUTURES)
