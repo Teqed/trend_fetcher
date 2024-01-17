@@ -232,7 +232,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .expect("should be a connection to Postgresql database");
     info!("{}", "Inserting or updating statuses".green());
-    stream::iter(trending_statuses.clone().into_iter())
+    let context_statuses = stream::iter(trending_statuses.clone().into_iter())
         .map(|(_, status)| {
             let pool = pool.clone();
             let home_server = home_server.clone();
@@ -247,10 +247,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .into_iter()
         .collect::<Result<Vec<_>, _>>()
         .expect("Error fetching statuses");
+    // Combine the hashmap vectors into one hashmap
+    let mut context_statuses_hashmap = HashMap::new();
+    for status_hashmap in context_statuses {
+        for (key, value) in status_hashmap {
+            context_statuses_hashmap.insert(key, value);
+        }
+    }
 
     info!("{}", "All OK!".green());
     info!("We saw {} trending statuses", trending_statuses.len());
-    // info!("We saw {} context statuses", context_statuses.len());
+    info!("We saw {} context statuses", context_statuses_hashmap.len());
     let end = time::OffsetDateTime::now_utc();
     let duration = end - start;
     info!("Duration: {duration}");
