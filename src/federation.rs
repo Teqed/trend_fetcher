@@ -291,13 +291,13 @@ impl Federation {
                     context.descendants.len()
                 );
                 for ancestor_status in context.ancestors {
-                    let _ = Self::fetch_status(
-                        &ancestor_status,
-                        pool,
-                        home_server,
-                        instance_collection,
-                    )
-                    .await;
+                    // let _ = Self::fetch_status(
+                    //     &ancestor_status,
+                    //     pool,
+                    //     home_server,
+                    //     instance_collection,
+                    // )
+                    // .await;
                     context_of_status
                         .entry(ancestor_status.uri.clone())
                         .or_insert(ancestor_status);
@@ -435,13 +435,13 @@ impl Federation {
                     context.descendants.len()
                 );
                 for ancestor_status in context.ancestors {
-                    let _ = Self::fetch_status(
-                        &ancestor_status,
-                        pool,
-                        home_server,
-                        instance_collection,
-                    )
-                    .await;
+                    // let _ = Self::fetch_status(
+                    //     &ancestor_status,
+                    //     pool,
+                    //     home_server,
+                    //     instance_collection,
+                    // )
+                    // .await;
                     context_of_status
                         .entry(ancestor_status.uri.clone())
                         .or_insert(ancestor_status);
