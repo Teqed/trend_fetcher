@@ -6,6 +6,7 @@ use mastodon_async::{helpers::cli, Result};
 use colored::Colorize;
 use sqlx::postgres::PgPool;
 use tracing::{debug, error, info, warn};
+use async_recursion::async_recursion;
 use crate::PAGE;
 
 /// Struct for interacting with Fediverse APIs.
@@ -40,20 +41,6 @@ impl Federation {
     }
 
     /// Gets an instance from the instance collection, or registers it if it doesn't exist.
-    ///
-    /// # Arguments
-    ///
-    /// * `instance_collection` - The collection of Mastodon instances.
-    /// * `server` - The server to get or register.
-    ///
-    /// # Panics
-    ///
-    /// This function panics if the server is not registered.
-    ///
-    /// # Errors
-    ///
-    /// This function returns an error if there is a problem registering the server.
-
     pub async fn get_instance(
         instance_collection: &mut HashMap<String, Mastodon>,
         server: &str,
@@ -74,43 +61,6 @@ impl Federation {
     }
 
     /// Gets the current user's account information.
-    ///
-    /// # Arguments
-    ///
-    /// * `mastodon` - The Mastodon instance.
-    ///
-    /// # Panics
-    ///
-    /// This function panics if there is an error retrieving the current user.
-    ///
-    /// # Errors
-    ///
-    /// This function returns an error if there is a problem retrieving the current user.
-
-    // pub async fn me(mastodon: &Mastodon) -> Account {
-    //     let me = mastodon
-    //         .verify_credentials()
-    //         .await
-    //         .expect("should be current user");
-    //     info!("You are logged in as: {}", me.acct);
-    //     me
-    // }
-
-    /// Fetches trending statuses from the specified base URL.
-    ///
-    /// # Arguments
-    ///
-    /// * `base` - The base URL to fetch the trending statuses from.
-    /// * `limit` - The maximum number of trending statuses to fetch.
-    ///
-    /// # Panics
-    ///
-    /// This function may panic if there is an error retrieving the trending statuses.
-    ///
-    /// # Errors
-    ///
-    /// This function returns a `Result` that may contain an error if there is a problem fetching the trending statuses.
-
     pub async fn fetch_trending_statuses(base: &str, limit: usize) -> Result<Vec<Status>> {
         info!("Fetching trending statuses from {base}");
         let base = base.strip_prefix("https://").unwrap_or(base);
@@ -156,22 +106,6 @@ impl Federation {
     }
 
     /// Find the status ID for a given URI.
-    ///
-    /// # Arguments
-    ///
-    /// * `uri` - The URI of the status.
-    /// * `pool` - The database connection pool.
-    /// * `instance_collection` - The collection of Mastodon instances.
-    /// * `home` - The home server.
-    ///
-    /// # Panics
-    ///
-    /// This function panics if the status is not found in the database.
-    ///
-    /// # Errors
-    ///
-    /// This function returns an error if the status is not found by the home server.
-
     pub async fn find_status_id(uri: &str, pool: &PgPool, home_instance: &Mastodon) -> Result<i64> {
         let select_statement = sqlx::query!(r#"SELECT id FROM statuses WHERE uri = $1"#, uri)
             .fetch_one(pool)
@@ -227,152 +161,8 @@ impl Federation {
             .or_insert(status);
     }
 
-    /// Add a status to the database.
-    ///
-    /// # Arguments
-    ///
-    /// * `statuses` - The collection of statuses.
-    /// * `status` - The status to add.
-    /// * `pool` - The database connection pool.
-    /// * `home_server` - The home server.
-    pub async fn add_context_status(
-        statuses: &HashMap<String, Status>,
-        status: Status,
-        pool: &PgPool,
-        home_server: &Mastodon,
-    ) -> Result<()> {
-        if statuses.contains_key(&status.uri) {
-            debug!("Status already exists, skipping: {}", status.uri);
-            return Ok(());
-        }
-        if status.reblogs_count == 0
-            && status.replies_count.unwrap_or(0) == 0
-            && status.favourites_count == 0
-        {
-            debug!("Status has no interactions, skipping: {}", status.uri);
-            return Ok(());
-        }
-        if let Ok(status_id) = Self::find_status_id(&status.uri, pool, home_server).await {
-            debug!("Status found in database: {}", status.uri);
-            let select_statement = sqlx::query!(
-                r#"SELECT id, reblogs_count, replies_count, favourites_count FROM status_stats WHERE status_id = $1"#,
-                status_id
-            );
-            let select_statement = select_statement.fetch_one(pool).await;
-
-            if select_statement.is_err() {
-                info!(
-                    "Status not found in status_stats table, inserting it: {}",
-                    status.uri
-                );
-                let offset_date_time = time::OffsetDateTime::now_utc();
-                let current_time =
-                    time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
-                let insert_statement = sqlx::query!(
-                    r#"INSERT INTO status_stats (status_id, reblogs_count, replies_count, favourites_count, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"#,
-                    status_id,
-                    status.reblogs_count.try_into().unwrap_or_else(|_| {
-                        warn!("Failed to convert reblogs_count to i64");
-                        0
-                    }),
-                    status
-                        .replies_count
-                        .unwrap_or(0)
-                        .try_into()
-                        .unwrap_or_else(|_| {
-                            warn!("Failed to convert replies_count to i64");
-                            0
-                        }),
-                    status.favourites_count.try_into().unwrap_or_else(|_| {
-                        warn!("Failed to convert favourites_count to i64");
-                        0
-                    }),
-                    current_time,
-                    current_time
-                );
-                let insert_statement = insert_statement.execute(pool).await;
-                if let Err(err) = insert_statement {
-                    error!("Error inserting status: {err}");
-                    return Ok(());
-                }
-            } else {
-                let record = select_statement.expect("should be fetched record from database");
-                let old_reblogs_count = record.reblogs_count.try_into().unwrap_or_else(|_| {
-                    warn!("Failed to convert reblogs_count to i64");
-                    0
-                });
-                let old_replies_count = record.replies_count.try_into().unwrap_or_else(|_| {
-                    warn!("Failed to convert replies_count to i64");
-                    0
-                });
-                let old_favourites_count =
-                    record.favourites_count.try_into().unwrap_or_else(|_| {
-                        warn!("Failed to convert favourites_count to i64");
-                        0
-                    });
-                if (status.reblogs_count <= old_reblogs_count)
-                    && (status.replies_count.unwrap_or(0) <= old_replies_count)
-                    && (status.favourites_count <= old_favourites_count)
-                {
-                    debug!("Status found in status_stats table, but we have smaller counts, skipping: {}", status.uri);
-                    return Ok(());
-                }
-                info!(
-                    "Status found in status_stats table, updating it: {}",
-                    status.uri
-                );
-                let offset_date_time = time::OffsetDateTime::now_utc();
-                let current_time =
-                    time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
-                let update_statement = sqlx::query!(
-                    r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
-                    status.reblogs_count.try_into().unwrap_or_else(|_| {
-                        warn!("Failed to convert reblogs_count to i64");
-                        0
-                    }),
-                    status
-                        .replies_count
-                        .unwrap_or(0)
-                        .try_into()
-                        .unwrap_or_else(|_| {
-                            warn!("Failed to convert replies_count to i64");
-                            0
-                        }),
-                    status.favourites_count.try_into().unwrap_or_else(|_| {
-                        warn!("Failed to convert favourites_count to i64");
-                        0
-                    }),
-                    current_time,
-                    status_id
-                );
-                let update_statement = update_statement.execute(pool).await;
-                if let Err(err) = update_statement {
-                    error!("Error updating status: {err}");
-                    return Ok(());
-                }
-            }
-            info!("{} {}", "Status found OK!".green(), status.uri);
-        } else {
-            debug!("Status not found in database: {}", status.uri);
-        }
-        Ok(())
-    }
-
     /// Fetches a status from the specified URI.
-    ///
-    /// # Arguments
-    ///
-    /// * `uri` - The URI of the status.
-    /// * `status` - The status to fetch.
-    /// * `pool` - The database connection pool.
-    /// * `home_server` - The home server.
-    /// * `instance_collection` - The collection of Mastodon instances.
-    /// * `context_of_statuses` - The collection of statuses to fetch context for.
-    ///
-    /// # Panics
-    ///
-    /// This function panics if the status is not found in the database.
-
+    #[async_recursion]
     pub async fn fetch_status(
         status: &Status,
         pool: &PgPool,
@@ -536,22 +326,22 @@ impl Federation {
             info!("Status found in status_stats table, updating it: {}", &status.uri);
             let update_statement = sqlx::query!(
                 r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
-                status.reblogs_count.try_into().unwrap_or_else(|_| {
+                std::cmp::max(status.reblogs_count.try_into().unwrap_or_else(|_| {
                     warn!("Failed to convert reblogs_count to i64");
                     0
-                }),
-                status
+                }), record.replies_count),
+                std::cmp::max(status
                     .replies_count
                     .unwrap_or(0)
                     .try_into()
                     .unwrap_or_else(|_| {
                         warn!("Failed to convert replies_count to i64");
                         0
-                    }),
-                status.favourites_count.try_into().unwrap_or_else(|_| {
+                    }), record.replies_count),
+                std::cmp::max(status.favourites_count.try_into().unwrap_or_else(|_| {
                     warn!("Failed to convert favourites_count to i64");
                     0
-                }),
+                }), record.favourites_count),
                 current_time,
                 status_id
             );
@@ -628,14 +418,15 @@ impl Federation {
                     context.descendants.len()
                 );
                 for ancestor_status in context.ancestors {
-                    context_of_status
-                        .entry(ancestor_status.uri.clone())
-                        .or_insert(ancestor_status);
+                    let _ = Self::fetch_status(&ancestor_status, pool, home_server, instance_collection).await;
                 }
                 for descendant_status in context.descendants {
-                    context_of_status
-                        .entry(descendant_status.uri.clone())
-                        .or_insert(descendant_status);
+                    let _ = Self::fetch_status(
+                        &descendant_status,
+                        pool,
+                        home_server,
+                        instance_collection,
+                    ).await;
                 }
             }
         }

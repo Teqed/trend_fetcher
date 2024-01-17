@@ -9,8 +9,8 @@
     clippy::style,
     clippy::suspicious,
     clippy::unwrap_used,
-    clippy::question_mark_used,
     // restrictions
+    // clippy::question_mark_used,
     clippy::panic_in_result_fn,
     clippy::print_stderr,
     clippy::print_stdout,
@@ -78,11 +78,46 @@ use federation::Federation;
 use futures::stream::{self, StreamExt};
 use sqlx::postgres::PgPool;
 use tracing::{debug, error, info, warn};
+use std::error::Error;
+use serde::Deserialize;
+use std::fs;
 
+#[derive(Deserialize)]
+/// Configuration struct for the application.
+struct Config {
+    /// Database configuration.
+    pub database: Database,
+    /// Servers configuration.
+    pub servers: Servers,
+}
+
+#[derive(Deserialize)]
+/// Servers configuration.
+struct Servers {
+    /// Home server.
+    pub home: String,
+    /// Authenticated servers.
+    pub authenticated: Vec<String>,
+    /// Unauthenticated servers.
+    pub unauthenticated: Vec<String>,
+}
+
+#[derive(Deserialize)]
+/// Database configuration.
+struct Database {
+    /// Database username.
+    pub username: String,
+    /// Database password.
+    pub password: String,
+    /// Database host.
+    pub host: String,
+    /// Database port.
+    pub port: i64,
+    /// Database name.
+    pub name: String,
+}
 /// The federation module provides functions for interacting with the Mastodon API.
 mod federation;
-/// The configuration module provides functions for loading the configuration.
-mod configuration;
 
 /// The number of statuses to fetch per page, a maximum defined by the Mastodon API.
 const PAGE: usize = 40;
@@ -91,56 +126,42 @@ const MAX_FUTURES: usize = 15;
 /// The maximum number of pages to fetch.
 const PAGES_TO_FETCH: usize = 6;
 
-/// Processes an iterator concurrently.
-/// 
-/// # Arguments
-/// 
-/// * `iter` - The iterator to process.
-/// * `processor` - The function to process each item in the iterator.
-/// * `limit` - The maximum number of futures to run concurrently.
-/// 
-/// # Returns
-/// 
-/// * `Vec<T>` - The results of processing the iterator.
-async fn process_concurrently<I, TI, TO, E, F, Fut>(iter: I, processor: F, limit: usize) -> Result<Vec<TO>, E>
-where
-    I: IntoIterator<Item = TI> + Send,
-    I::IntoIter: Send,
-    TI: Send + 'static,
-    TO: Send + 'static,
-    F: Fn(TI) -> Fut + Copy + Send,
-    Fut: std::future::Future<Output = Result<TO, E>> + Send,
-    E: std::fmt::Debug + Send + 'static,
-{
-    stream::iter(iter)
-        .map(processor)
-        .buffer_unordered(limit)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-}
-
 #[tokio::main]
 #[tracing::instrument]
 /// The main function.
-async fn main() -> Result<(), ()> {
-    debug!("Starting");
-    if false { error!("This is an error"); }
-    tracing::subscriber::set_global_default(tracing_subscriber::FmtSubscriber::new()).expect("should be default subscriber");
+async fn main() -> Result<(), Box<dyn Error>> {
     let start = time::OffsetDateTime::now_utc();
+    debug!("Starting at {start}");
+    tracing::subscriber::set_global_default(tracing_subscriber::FmtSubscriber::new()).expect("should be default subscriber");
     let mut instance_collection = HashMap::new();
-    let config = configuration::load_config();
+    let config: Config = match fs::read_to_string("config.toml") {
+        Ok(config) => {
+            match toml::from_str(&config) {
+                Ok(config) => config,
+                Err(e) => {
+                    error!("{}", "Error loading configuration. Please ensure that the configuration file is valid TOML".to_string().red());
+                    error!("{}", "See the example configuration file `config.toml.example` for more information on required fields".to_string().red());
+                    error!("{}", format!("{}", e.to_string().red()));
+                    return Err(e.into());
+                }
+            }
+        }
+        Err(e) => {
+            error!("{}", "Error loading configuration. Please ensure that the configuration file exists".to_string().red());
+            error!("{}", "See the example configuration file `config.toml.example`".to_string().red());
+            error!("{}", format!("{}", e.to_string().red()));
+            return Err(e.into());
+        }
+    };
     let mut queued_servers: HashSet<String> = HashSet::new();
-    let home_server =
-        Federation::get_instance(&mut instance_collection, &config.servers.home).await;
+    let home_server = Federation::get_instance(&mut instance_collection, &config.servers.home).await;
     for server in config.servers.authenticated {
         Federation::get_instance(&mut instance_collection, &server).await;
         queued_servers.insert(server);
     }
-    for server in config.servers.unauthenticated {
-        queued_servers.insert(server);
-    }
+    config.servers.unauthenticated.iter().for_each(|server| {
+        queued_servers.insert(server.to_string());
+    });
     info!("{}", "Fetching trending statuses".green().to_string());
     let mut trending_statuses = HashMap::new();
     let mut fetched_servers = HashSet::new();
@@ -150,17 +171,18 @@ async fn main() -> Result<(), ()> {
             "{}",
             "Fetching trending statuses from queued servers".green()
         );
-        let fetched_trending_statuses_vec = process_concurrently(
-            queued_servers.iter().cloned(),
-            |server| {
+        let fetched_trending_statuses_vec = stream::iter(queued_servers.iter().cloned())
+            .map(|server| {
                 async move {
                     Federation::fetch_trending_statuses(&server, PAGE * PAGES_TO_FETCH).await
                 }
-            },
-            MAX_FUTURES,
-        )
-        .await
-        .expect("Error fetching trending statuses from queued servers");
+            })
+            .buffer_unordered(MAX_FUTURES)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("Error fetching trending statuses from queued servers");
         fetched_servers.extend(queued_servers.iter().cloned());
         queued_servers.clear();
         let aux_trending_statuses_hashmap = {
@@ -202,9 +224,8 @@ async fn main() -> Result<(), ()> {
         .await
         .expect("should be a connection to Postgresql database");
     info!("{}", "Inserting or updating statuses".green());
-    let context_statuses = process_concurrently(
-        trending_statuses.clone().into_iter(),
-        |(_, status)| {
+    stream::iter(trending_statuses.clone().into_iter())
+        .map(|(_, status)| {
             let pool = pool.clone();
             let home_server = home_server.clone();
             let instance_collection = instance_collection.clone();
@@ -217,29 +238,17 @@ async fn main() -> Result<(), ()> {
                 )
                 .await
             }
-        },
-        MAX_FUTURES,
-    )
-    .await
-    .expect("Error fetching statuses")
-    .into_iter()
-    .flatten()
-    .collect::<HashMap<_, _>>();
-
-    let context_statuses_length = context_statuses.len();
-    info! {"{}", format!("Fetching {context_statuses_length} statuses found by context").green()};
-    process_concurrently(
-        context_statuses.clone().into_iter(),
-        |(_, status)| Federation::add_context_status(&trending_statuses, status, &pool, &home_server),
-        MAX_FUTURES,
-    )
-    .await
-    .expect("Error fetching context statuses")
-    .into_iter();
+        })
+        .buffer_unordered(MAX_FUTURES)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("Error fetching statuses");
 
     info!("{}", "All OK!".green());
     info!("We saw {} trending statuses", trending_statuses.len());
-    info!("We saw {} context statuses", context_statuses.len());
+    // info!("We saw {} context statuses", context_statuses.len());
     let end = time::OffsetDateTime::now_utc();
     let duration = end - start;
     info!("Duration: {duration}");
