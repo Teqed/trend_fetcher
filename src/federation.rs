@@ -207,14 +207,7 @@ impl Federation {
                     warn!("Failed to convert reblogs_count to i64");
                     0
                 }),
-                status
-                    .replies_count
-                    .unwrap_or(0)
-                    .try_into()
-                    .unwrap_or_else(|_| {
-                        warn!("Failed to convert replies_count to i64");
-                        0
-                    }),
+                0,
                 status.favourites_count.try_into().unwrap_or_else(|_| {
                     warn!("Failed to convert favourites_count to i64");
                     0
@@ -334,24 +327,13 @@ impl Federation {
                 &status.uri
             );
             let update_statement = sqlx::query!(
-                r#"UPDATE status_stats SET reblogs_count = $1, replies_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
+                r#"UPDATE status_stats SET reblogs_count = $1, favourites_count = $2, updated_at = $3 WHERE status_id = $4"#,
                 std::cmp::max(
                     status.reblogs_count.try_into().unwrap_or_else(|_| {
                         warn!("Failed to convert reblogs_count to i64");
                         0
                     }),
-                    record.replies_count
-                ),
-                std::cmp::max(
-                    status
-                        .replies_count
-                        .unwrap_or(0)
-                        .try_into()
-                        .unwrap_or_else(|_| {
-                            warn!("Failed to convert replies_count to i64");
-                            0
-                        }),
-                    record.replies_count
+                    record.reblogs_count
                 ),
                 std::cmp::max(
                     status.favourites_count.try_into().unwrap_or_else(|_| {
