@@ -180,9 +180,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "Fetching trending statuses from queued servers".green()
         );
         let fetched_trending_statuses_vec = stream::iter(queued_servers.iter().cloned())
-            .map(|server| async move {
-                Federation::fetch_trending_statuses(&server).await
-            })
+            .map(|server| async move { Federation::fetch_trending_statuses(&server).await })
             .buffer_unordered(MAX_FUTURES)
             .collect::<Vec<_>>()
             .await
@@ -237,8 +235,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let home_server = home_server.clone();
             let instance_collection = instance_collection.clone();
             async move {
-                Federation::fetch_status(&status, &pool, &home_server, &instance_collection)
-                    .await
+                Federation::fetch_status(&status, &pool, &home_server, &instance_collection).await
             }
         })
         .buffer_unordered(MAX_FUTURES)

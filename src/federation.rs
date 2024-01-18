@@ -4,10 +4,10 @@ use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
 
 use crate::PAGE;
+use async_recursion::async_recursion;
 use colored::Colorize;
 use sqlx::postgres::PgPool;
 use tracing::{debug, error, info, warn};
-use async_recursion::async_recursion;
 
 /// Struct for interacting with Fediverse APIs.
 pub struct Federation;
@@ -78,10 +78,7 @@ impl Federation {
                     "Error HTTP: {}",
                     response.expect_err("Trending statuses error")
                 );
-                warn!(
-                    "Encountered on {}",
-                    url.red()
-                );
+                warn!("Encountered on {}", url.red());
                 break;
             }
             let response = response.expect("should be trending statuses");
@@ -308,7 +305,7 @@ impl Federation {
                 //     instance_collection,
                 // )
                 // .await;
-                // 
+                //
                 //     .entry(ancestor_status.uri.clone())
                 //     .or_insert(ancestor_status);
                 // }
@@ -320,7 +317,7 @@ impl Federation {
                         instance_collection,
                     )
                     .await;
-                    // 
+                    //
                     //     .entry(descendant_status.uri.clone())
                     //     .or_insert(descendant_status);
                 }
@@ -456,7 +453,7 @@ impl Federation {
                 //     instance_collection,
                 // )
                 // .await;
-                //     
+                //
                 //         .entry(ancestor_status.uri.clone())
                 //         .or_insert(ancestor_status);
                 // }
@@ -468,9 +465,9 @@ impl Federation {
                         instance_collection,
                     )
                     .await;
-                    
-                        // .entry(descendant_status.uri.clone())
-                        // .or_insert(descendant_status);
+
+                    // .entry(descendant_status.uri.clone())
+                    // .or_insert(descendant_status);
                 }
             }
         }
