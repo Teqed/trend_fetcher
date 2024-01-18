@@ -212,7 +212,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             fetched_trending_statuses
         };
         for (key, value) in aux_trending_statuses_hashmap {
-            if let std::collections::hash_map::Entry::Vacant(e) = queued_trending_statuses.entry(key) {
+            if let std::collections::hash_map::Entry::Vacant(e) =
+                queued_trending_statuses.entry(key)
+            {
                 e.insert(value);
             } else {
                 Federation::modify_counts(&mut queued_trending_statuses, value);
@@ -235,23 +237,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut fetched_context_statuses = HashMap::new();
     let length_of_queued_trending_statuses = queued_trending_statuses.len();
     while !queued_trending_statuses.is_empty() {
-        info!("Queued context statuses: {}", queued_trending_statuses.len());
-        let fetched_context_statuses_vec = stream::iter(queued_trending_statuses.clone().into_iter())
-            .map(|(_, status)| {
-                let pool = pool.clone();
-                let home_server = home_server.clone();
-                let instance_collection = instance_collection.clone();
-                async move {
-                    Federation::fetch_status(&status, &pool, &home_server, &instance_collection)
-                        .await
-                }
-            })
-            .buffer_unordered(MAX_FUTURES)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .expect("Error fetching context statuses from queued statuses");
+        info!(
+            "Queued context statuses: {}",
+            queued_trending_statuses.len()
+        );
+        let fetched_context_statuses_vec =
+            stream::iter(queued_trending_statuses.clone().into_iter())
+                .map(|(_, status)| {
+                    let pool = pool.clone();
+                    let home_server = home_server.clone();
+                    let instance_collection = instance_collection.clone();
+                    async move {
+                        Federation::fetch_status(&status, &pool, &home_server, &instance_collection)
+                            .await
+                    }
+                })
+                .buffer_unordered(MAX_FUTURES)
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+                .expect("Error fetching context statuses from queued statuses");
         fetched_context_statuses.extend(queued_trending_statuses.clone().into_iter());
         queued_trending_statuses.clear();
         for status in fetched_context_statuses_vec.into_iter().flatten() {
@@ -259,7 +265,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Federation::modify_counts(&mut fetched_context_statuses, status.1);
                 continue;
             }
-            if let std::collections::hash_map::Entry::Occupied(mut e) = queued_trending_statuses.entry(status.0) {
+            if let std::collections::hash_map::Entry::Occupied(mut e) =
+                queued_trending_statuses.entry(status.0)
+            {
                 e.insert(status.1);
             } else {
                 Federation::modify_counts(&mut queued_trending_statuses, status.1);
@@ -268,7 +276,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
 
     info!("{}", "All OK!".green());
-    info!("We saw {} trending statuses", length_of_queued_trending_statuses);
+    info!(
+        "We saw {} trending statuses",
+        length_of_queued_trending_statuses
+    );
     info!("We saw {} context statuses", fetched_context_statuses.len());
     let end = time::OffsetDateTime::now_utc();
     let duration = end - start;
