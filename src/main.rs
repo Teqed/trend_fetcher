@@ -173,7 +173,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         queued_servers.insert(server.to_string());
     });
     info!("{}", "Fetching trending statuses".green().to_string());
-    let mut trending_statuses = HashMap::new();
+    let mut queued_trending_statuses = HashMap::new();
     let mut fetched_servers = HashSet::new();
     while !queued_servers.is_empty() {
         info!("Queued servers: {}", queued_servers.len());
@@ -212,14 +212,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
             fetched_trending_statuses
         };
         for (key, value) in aux_trending_statuses_hashmap {
-            if let std::collections::hash_map::Entry::Vacant(e) = trending_statuses.entry(key) {
+            if let std::collections::hash_map::Entry::Vacant(e) = queued_trending_statuses.entry(key) {
                 e.insert(value);
             } else {
-                Federation::modify_counts(&mut trending_statuses, value);
+                Federation::modify_counts(&mut queued_trending_statuses, value);
             }
         }
     }
-    info!("Total statuses: {}", trending_statuses.len());
+    info!("Total statuses: {}", queued_trending_statuses.len());
 
     let pool = PgPool::connect(&format!(
         "postgres://{database_username}:{database_password}@{database_host}:{database_port}/{database_name}",
@@ -232,32 +232,44 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .expect("should be a connection to Postgresql database");
     info!("{}", "Inserting or updating statuses".green());
-    let context_statuses = stream::iter(trending_statuses.clone().into_iter())
-        .map(|(_, status)| {
-            let pool = pool.clone();
-            let home_server = home_server.clone();
-            let instance_collection = instance_collection.clone();
-            async move {
-                Federation::fetch_status(&status, &pool, &home_server, &instance_collection).await
+    let mut fetched_context_statuses = HashMap::new();
+    let length_of_queued_trending_statuses = queued_trending_statuses.len();
+    while !queued_trending_statuses.is_empty() {
+        info!("Queued context statuses: {}", queued_trending_statuses.len());
+        let fetched_context_statuses_vec = stream::iter(queued_trending_statuses.clone().into_iter())
+            .map(|(_, status)| {
+                let pool = pool.clone();
+                let home_server = home_server.clone();
+                let instance_collection = instance_collection.clone();
+                async move {
+                    Federation::fetch_status(&status, &pool, &home_server, &instance_collection)
+                        .await
+                }
+            })
+            .buffer_unordered(MAX_FUTURES)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("Error fetching context statuses from queued statuses");
+        fetched_context_statuses.extend(queued_trending_statuses.clone().into_iter());
+        queued_trending_statuses.clear();
+        for status in fetched_context_statuses_vec.into_iter().flatten() {
+            if fetched_context_statuses.contains_key(&status.0) {
+                Federation::modify_counts(&mut fetched_context_statuses, status.1);
+                continue;
             }
-        })
-        .buffer_unordered(MAX_FUTURES)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .expect("Error fetching statuses");
-    // Combine the hashmap vectors into one hashmap
-    let mut context_statuses_hashmap = HashMap::new();
-    for status_hashmap in context_statuses {
-        for (key, value) in status_hashmap {
-            context_statuses_hashmap.entry(key).or_insert(value);
+            if let std::collections::hash_map::Entry::Occupied(mut e) = queued_trending_statuses.entry(status.0) {
+                e.insert(status.1);
+            } else {
+                Federation::modify_counts(&mut queued_trending_statuses, status.1);
+            }
         }
     }
 
     info!("{}", "All OK!".green());
-    info!("We saw {} trending statuses", trending_statuses.len());
-    info!("We saw {} context statuses", context_statuses_hashmap.len());
+    info!("We saw {} trending statuses", length_of_queued_trending_statuses);
+    info!("We saw {} context statuses", fetched_context_statuses.len());
     let end = time::OffsetDateTime::now_utc();
     let duration = end - start;
     info!("Duration: {duration}");

@@ -4,7 +4,6 @@ use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
 
 use crate::PAGE;
-use async_recursion::async_recursion;
 use colored::Colorize;
 use sqlx::postgres::PgPool;
 use tracing::{debug, error, info, warn};
@@ -114,7 +113,7 @@ impl Federation {
         if let Ok(status) = select_statement {
             Ok(status.id)
         } else {
-            info!("Status not found in database, searching for it: {uri}");
+            debug!("Status not found in database, searching for it: {uri}");
             let search_result = home_instance.search(uri, true).await;
             if search_result.is_err() {
                 let message: String = format!("Status not found by home server: {uri}");
@@ -162,7 +161,6 @@ impl Federation {
     }
 
     /// Fetches a status from the specified URI.
-    #[async_recursion]
     pub async fn fetch_status(
         status: &Status,
         pool: &PgPool,
@@ -196,7 +194,7 @@ impl Federation {
         let current_time =
             time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
         if select_statement.is_err() {
-            info!(
+            debug!(
                 "Status not found in status_stats table, inserting it: {}",
                 &status.uri
             );
@@ -221,7 +219,7 @@ impl Federation {
                 return Ok(context_of_status);
             }
             if status.replies_count.unwrap_or(0) > 0 {
-                info!("Fetching context for status: {}", &status.uri);
+                debug!("Fetching context for status: {}", &status.uri);
                 let original_id = StatusId::new(
                     status
                         .uri
@@ -290,7 +288,7 @@ impl Federation {
                     context.ancestors.len(),
                     context.descendants.len()
                 );
-                for ancestor_status in context.ancestors {
+                // for ancestor_status in context.ancestors {
                     // let _ = Self::fetch_status(
                     //     &ancestor_status,
                     //     pool,
@@ -298,18 +296,18 @@ impl Federation {
                     //     instance_collection,
                     // )
                     // .await;
-                    context_of_status
-                        .entry(ancestor_status.uri.clone())
-                        .or_insert(ancestor_status);
-                }
+                    // context_of_status
+                    //     .entry(ancestor_status.uri.clone())
+                    //     .or_insert(ancestor_status);
+                // }
                 for descendant_status in context.descendants {
-                    let _ = Self::fetch_status(
-                        &descendant_status,
-                        pool,
-                        home_server,
-                        instance_collection,
-                    )
-                    .await;
+                    // let _ = Self::fetch_status(
+                    //     &descendant_status,
+                    //     pool,
+                    //     home_server,
+                    //     instance_collection,
+                    // )
+                    // .await;
                     context_of_status
                         .entry(descendant_status.uri.clone())
                         .or_insert(descendant_status);
@@ -336,7 +334,7 @@ impl Federation {
                 debug!("Status found in status_stats table, but we don't have larger counts, skipping: {}", &status.uri);
                 return Ok(context_of_status);
             }
-            info!(
+            debug!(
                 "Status found in status_stats table, updating it: {}",
                 &status.uri
             );
@@ -365,7 +363,7 @@ impl Federation {
                 return Ok(context_of_status);
             }
             if status.replies_count.unwrap_or(0) > old_replies_count {
-                info!("Fetching context for status: {}", &status.uri);
+                debug!("Fetching context for status: {}", &status.uri);
                 let original_id = StatusId::new(
                     status
                         .uri
@@ -434,7 +432,7 @@ impl Federation {
                     context.ancestors.len(),
                     context.descendants.len()
                 );
-                for ancestor_status in context.ancestors {
+                // for ancestor_status in context.ancestors {
                     // let _ = Self::fetch_status(
                     //     &ancestor_status,
                     //     pool,
@@ -442,25 +440,25 @@ impl Federation {
                     //     instance_collection,
                     // )
                     // .await;
-                    context_of_status
-                        .entry(ancestor_status.uri.clone())
-                        .or_insert(ancestor_status);
-                }
+                //     context_of_status
+                //         .entry(ancestor_status.uri.clone())
+                //         .or_insert(ancestor_status);
+                // }
                 for descendant_status in context.descendants {
-                    let _ = Self::fetch_status(
-                        &descendant_status,
-                        pool,
-                        home_server,
-                        instance_collection,
-                    )
-                    .await;
+                    // let _ = Self::fetch_status(
+                    //     &descendant_status,
+                    //     pool,
+                    //     home_server,
+                    //     instance_collection,
+                    // )
+                    // .await;
                     context_of_status
                         .entry(descendant_status.uri.clone())
                         .or_insert(descendant_status);
                 }
             }
         }
-        info!("{}", format!("Fetched {} OK!", &status.uri).green());
+        debug!("{}", format!("Fetched {} OK!", &status.uri).green());
         Ok(context_of_status)
     }
 }
