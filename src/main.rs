@@ -123,8 +123,6 @@ mod federation;
 const PAGE: usize = 40;
 /// The maximum number of futures to run concurrently.
 const MAX_FUTURES: usize = 15;
-/// The maximum number of pages to fetch.
-const PAGES_TO_FETCH: usize = 6;
 
 #[tokio::main]
 #[tracing::instrument]
@@ -183,7 +181,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
         let fetched_trending_statuses_vec = stream::iter(queued_servers.iter().cloned())
             .map(|server| async move {
-                Federation::fetch_trending_statuses(&server, PAGE * PAGES_TO_FETCH).await
+                Federation::fetch_trending_statuses(&server).await
             })
             .buffer_unordered(MAX_FUTURES)
             .collect::<Vec<_>>()
@@ -211,14 +209,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
             fetched_trending_statuses
         };
-        for (key, value) in aux_trending_statuses_hashmap {
-            if let std::collections::hash_map::Entry::Vacant(e) =
-                queued_trending_statuses.entry(key)
-            {
-                e.insert(value);
-            } else {
-                Federation::modify_counts(&mut queued_trending_statuses, value);
-            }
+        for (_, value) in aux_trending_statuses_hashmap {
+            Federation::modify_counts(&mut queued_trending_statuses, value);
         }
     }
     info!("Total statuses: {}", queued_trending_statuses.len());
@@ -234,53 +226,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .expect("should be a connection to Postgresql database");
     info!("{}", "Inserting or updating statuses".green());
-    let mut fetched_context_statuses = HashMap::new();
     let length_of_queued_trending_statuses = queued_trending_statuses.len();
-    while !queued_trending_statuses.is_empty() {
-        info!(
-            "Queued context statuses: {}",
-            queued_trending_statuses.len()
-        );
-        let fetched_context_statuses_vec =
-            stream::iter(queued_trending_statuses.clone().into_iter())
-                .map(|(_, status)| {
-                    let pool = pool.clone();
-                    let home_server = home_server.clone();
-                    let instance_collection = instance_collection.clone();
-                    async move {
-                        Federation::fetch_status(&status, &pool, &home_server, &instance_collection)
-                            .await
-                    }
-                })
-                .buffer_unordered(MAX_FUTURES)
-                .collect::<Vec<_>>()
-                .await
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()
-                .expect("Error fetching context statuses from queued statuses");
-        fetched_context_statuses.extend(queued_trending_statuses.clone().into_iter());
-        queued_trending_statuses.clear();
-        for status in fetched_context_statuses_vec.into_iter().flatten() {
-            if fetched_context_statuses.contains_key(&status.0) {
-                Federation::modify_counts(&mut fetched_context_statuses, status.1);
-                continue;
+    info!(
+        "Queued context statuses: {}",
+        queued_trending_statuses.len()
+    );
+    stream::iter(queued_trending_statuses.clone().into_iter())
+        .map(|(_, status)| {
+            let pool = pool.clone();
+            let home_server = home_server.clone();
+            let instance_collection = instance_collection.clone();
+            async move {
+                Federation::fetch_status(&status, &pool, &home_server, &instance_collection)
+                    .await
             }
-            if let std::collections::hash_map::Entry::Occupied(mut e) =
-                queued_trending_statuses.entry(status.0)
-            {
-                e.insert(status.1);
-            } else {
-                Federation::modify_counts(&mut queued_trending_statuses, status.1);
-            }
-        }
-    }
+        })
+        .buffer_unordered(MAX_FUTURES)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("Error fetching context statuses from queued statuses");
 
     info!("{}", "All OK!".green());
     info!(
         "We saw {} trending statuses",
         length_of_queued_trending_statuses
     );
-    info!("We saw {} context statuses", fetched_context_statuses.len());
+    // info!("We saw {} context statuses", fetched_context_statuses.len());
     let end = time::OffsetDateTime::now_utc();
     let duration = end - start;
     info!("Duration: {duration}");
