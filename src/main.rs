@@ -122,7 +122,7 @@ mod federation;
 /// The number of statuses to fetch per page, a maximum defined by the Mastodon API.
 const PAGE: usize = 40;
 /// The maximum number of futures to run concurrently.
-const MAX_FUTURES: usize = 15;
+const MAX_FUTURES: usize = 5;
 
 #[tokio::main]
 #[tracing::instrument]
@@ -194,9 +194,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
             for status in fetched_trending_statuses_vec.into_iter().flatten() {
                 let base = status
                     .uri
+                    .to_string();
+                let base = base
                     .split('/')
                     .nth(2)
-                    .expect("Should be FQDN parsed from status URI");
+                    .expect("Error getting base from status URI");
                 if !fetched_servers.contains(base) {
                     // This is a load-bearing comment that prevents the linter from collapsing these statements
                     if queued_servers.insert(base.to_string()) {

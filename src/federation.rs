@@ -87,17 +87,47 @@ impl Federation {
                 break;
             }
             let json = response.text().await.expect("should be trending statuses");
-            let json = json.replace(r#""followers_count":-1"#, r#""followers_count":0"#);
-            let trending_statuses_raw = serde_json::from_str::<Vec<_>>(&json);
+            info!("Reading Trending JSON");
+            let trending_statuses_raw: std::prelude::v1::Result<Vec<Status>, serde_json::Error> =
+                serde_json::from_str(&json);
             if trending_statuses_raw.is_err() {
+            warn!("Parsing Issue on Trending JSON");
+                let error = trending_statuses_raw.expect_err("Trending statuses error");
                 error!(
-                    "Error JSON: {}",
-                    trending_statuses_raw.expect_err("Trending statuses error")
+                    "Error JSON: {}", error
                 );
-                warn!("Error JSON contents: {}", json);
+                let column = error
+                    .to_string()
+                    .split("column ")
+                    .last()
+                    .expect("should be column")
+                    .parse::<usize>()
+                    .expect("should be usize");
+                let json = json.as_bytes();
+                let mut start = column;
+                let mut end = column;
+                for _ in 0..1000 {
+                    if start == 0 {
+                        break;
+                    }
+                    start -= 1;
+                }
+                for _ in 0..1000 {
+                    if end == json.len() {
+                        break;
+                    }
+                    end += 1;
+                }
+                let json = String::from_utf8_lossy(&json[start..end]);
+                error!("Error JSON preview window: {}", json);
+                // wait until 'enter' is pressed
+                // let mut input = String::new();
+                // std::io::stdin()
+                //     .read_line(&mut input)
+                //     .expect("should be able to read line");
                 break;
             }
-            let trending_statuses: Vec<Status> =
+            let trending_statuses: Vec<_> =
                 trending_statuses_raw.expect("should be trending statuses");
             let length_trending_statuses = trending_statuses.len();
             trends.extend(trending_statuses);
@@ -147,12 +177,12 @@ impl Federation {
     /// Modify the counts of a status.
     pub fn modify_counts(statuses: &mut HashMap<String, Status>, status: Status) {
         statuses
-            .entry(status.uri.clone())
+            .entry(status.uri.to_string())
             .and_modify(|existing_status: &mut Status| {
                 debug!(
                     "Duplicate status, Reb: {:?}, Rep: {:?}, Fav: {:?}",
                     existing_status.reblogs_count,
-                    existing_status.replies_count.unwrap_or(0),
+                    existing_status.replies_count,
                     existing_status.favourites_count
                 );
                 existing_status.reblogs_count =
@@ -174,7 +204,7 @@ impl Federation {
         instance_collection: &HashMap<String, Mastodon>,
     ) -> Result<()> {
         info!("Status: {}", &status.uri);
-        let status_id = Self::find_status_id(&status.uri, pool, home_server).await;
+        let status_id = Self::find_status_id(status.uri.as_ref(), pool, home_server).await;
         if status_id.is_err() {
             warn!("Status not found by home server, skipping: {}", &status.uri);
             return Ok(());
@@ -182,7 +212,7 @@ impl Federation {
         let status_id = status_id.expect("should be status ID");
 
         if status.reblogs_count == 0
-            && status.replies_count.unwrap_or(0) == 0
+            && status.replies_count <= 0
             && status.favourites_count == 0
         {
             debug!("Status has no interactions, skipping: {}", &status.uri);
@@ -223,11 +253,12 @@ impl Federation {
                 error!("Error inserting status: {err}");
                 return Ok(());
             }
-            if status.replies_count.unwrap_or(0) > 0 {
+            if status.replies_count > 0 {
                 debug!("Fetching context for status: {}", &status.uri);
                 let original_id = StatusId::new(
                     status
                         .uri
+                        .to_string()
                         .split('/')
                         .last()
                         .expect("should be status ID")
@@ -235,6 +266,7 @@ impl Federation {
                 );
                 let original_id_string = &status
                     .uri
+                    .to_string()
                     .split('/')
                     .last()
                     .expect("should be status ID")
@@ -250,7 +282,7 @@ impl Federation {
                     debug!("Status is a reply, skipping: {}", &status.uri);
                     return Ok(());
                 }
-                let base_server = reqwest::Url::parse(&status.uri)
+                let base_server = reqwest::Url::parse(status.uri.as_ref())
                     .expect("should be status URI")
                     .host_str()
                     .expect("should be base server string")
@@ -287,6 +319,41 @@ impl Federation {
                     let context = serde_json::from_str::<Context>(&json);
                     if let Err(err) = context {
                         error!("{} {err}", "Error JSON:".red());
+                        let column = err
+                            .to_string()
+                            .split("column ")
+                            .last()
+                            .expect("should be column")
+                            .parse::<usize>()
+                            .expect("should be usize");
+                        let json = json.as_bytes();
+                        let mut start = column;
+                        let mut end = column;
+                        for _ in 0..50 {
+                            if start == 0 {
+                                break;
+                            }
+                            start -= 1;
+                            if json[start] == b',' {
+                                break;
+                            }
+                        }
+                        for _ in 0..50 {
+                            if end == json.len() {
+                                break;
+                            }
+                            end += 1;
+                            if json[end] == b',' {
+                                break;
+                            }
+                        }
+                        let json = String::from_utf8_lossy(&json[start..end]);
+                        error!("Error JSON preview window: {}", json);
+                        // wait until 'enter' is pressed
+                        // let mut input = String::new();
+                        // std::io::stdin()
+                        //     .read_line(&mut input)
+                        //     .expect("should be able to read line");
                         return Ok(());
                     }
                     context.expect("should be Context of Status")
@@ -324,20 +391,11 @@ impl Federation {
             }
         } else {
             let record = select_statement.expect("should be fetched record from database");
-            let old_reblogs_count = record.reblogs_count.try_into().unwrap_or_else(|_| {
-                warn!("Failed to convert reblogs_count to i64");
-                0
-            });
-            let old_replies_count = record.replies_count.try_into().unwrap_or_else(|_| {
-                warn!("Failed to convert replies_count to i64");
-                0
-            });
-            let old_favourites_count = record.favourites_count.try_into().unwrap_or_else(|_| {
-                warn!("Failed to convert favourites_count to i64");
-                0
-            });
+            let old_reblogs_count = record.reblogs_count;
+            let old_replies_count = record.replies_count;
+            let old_favourites_count = record.favourites_count;
             if (status.reblogs_count <= old_reblogs_count)
-                && (status.replies_count.unwrap_or(0) <= old_replies_count)
+                && (status.replies_count <= old_replies_count)
                 && (status.favourites_count <= old_favourites_count)
             {
                 debug!("Status found in status_stats table, but we don't have larger counts, skipping: {}", &status.uri);
@@ -371,11 +429,12 @@ impl Federation {
                 error!("Error updating status: {err}");
                 return Ok(());
             }
-            if status.replies_count.unwrap_or(0) > old_replies_count {
+            if status.replies_count > old_replies_count {
                 debug!("Fetching context for status: {}", &status.uri);
                 let original_id = StatusId::new(
                     status
                         .uri
+                        .to_string()
                         .split('/')
                         .last()
                         .expect("should be Status ID")
@@ -383,6 +442,7 @@ impl Federation {
                 );
                 let original_id_string = &status
                     .uri
+                    .to_string()
                     .split('/')
                     .last()
                     .expect("should be Status ID")
@@ -398,7 +458,7 @@ impl Federation {
                     debug!("Status is a reply, skipping: {}", &status.uri);
                     return Ok(());
                 }
-                let base_server = reqwest::Url::parse(&status.uri)
+                let base_server = reqwest::Url::parse(status.uri.as_ref())
                     .expect("should be Status URI")
                     .host_str()
                     .expect("should be base server string")
@@ -435,6 +495,41 @@ impl Federation {
                     let context = serde_json::from_str::<Context>(&json);
                     if let Err(err) = context {
                         error!("{} {err}", "Error JSON:".red());
+                        let column = err
+                            .to_string()
+                            .split("column ")
+                            .last()
+                            .expect("should be column")
+                            .parse::<usize>()
+                            .expect("should be usize");
+                        let json = json.as_bytes();
+                        let mut start = column;
+                        let mut end = column;
+                        for _ in 0..50 {
+                            if start == 0 {
+                                break;
+                            }
+                            start -= 1;
+                            if json[start] == b',' {
+                                break;
+                            }
+                        }
+                        for _ in 0..50 {
+                            if end == json.len() {
+                                break;
+                            }
+                            end += 1;
+                            if json[end] == b',' {
+                                break;
+                            }
+                        }
+                        let json = String::from_utf8_lossy(&json[start..end]);
+                        error!("Error JSON preview window: {}", json);
+                        // wait until 'enter' is pressed
+                        // let mut input = String::new();
+                        // std::io::stdin()
+                        //     .read_line(&mut input)
+                        //     .expect("should be able to read line");
                         return Ok(());
                     }
                     context.expect("should be Context of Status")
