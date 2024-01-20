@@ -90,11 +90,9 @@ impl Federation {
             let trending_statuses_raw: std::prelude::v1::Result<Vec<Status>, serde_json::Error> =
                 serde_json::from_str(&json);
             if trending_statuses_raw.is_err() {
-            warn!("Parsing Issue on Trending JSON");
+                warn!("Parsing Issue on Trending JSON");
                 let error = trending_statuses_raw.expect_err("Trending statuses error");
-                error!(
-                    "Error JSON: {}", error
-                );
+                error!("Error JSON: {}", error);
                 let column = error
                     .to_string()
                     .split("column ")
@@ -210,10 +208,7 @@ impl Federation {
         }
         let status_id = status_id.expect("should be status ID");
 
-        if status.reblogs_count == 0
-            && status.replies_count <= 0
-            && status.favourites_count == 0
-        {
+        if status.reblogs_count == 0 && status.replies_count <= 0 && status.favourites_count == 0 {
             debug!("Status has no interactions, skipping: {}", &status.uri);
             return Ok(additional_context_statuses);
         }
@@ -559,8 +554,8 @@ impl Federation {
                     // )
                     // .await;
                     additional_context_statuses
-                    .entry(descendant_status.uri.to_string().clone())
-                    .or_insert(descendant_status);
+                        .entry(descendant_status.uri.to_string().clone())
+                        .or_insert(descendant_status);
                 }
             }
         }

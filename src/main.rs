@@ -192,9 +192,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let aux_trending_statuses_hashmap = {
             let mut fetched_trending_statuses = HashMap::new();
             for status in fetched_trending_statuses_vec.into_iter().flatten() {
-                let base = status
-                    .uri
-                    .to_string();
+                let base = status.uri.to_string();
                 let base = base
                     .split('/')
                     .nth(2)
@@ -234,25 +232,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut fetched_context_statuses = HashMap::new();
     let mut queued_context_statuses = queued_trending_statuses.clone();
     while !queued_context_statuses.is_empty() {
-        info!(
-            "Queued context statuses: {}",
-            queued_context_statuses.len()
-        );
+        info!("Queued context statuses: {}", queued_context_statuses.len());
         let some_context = stream::iter(queued_trending_statuses.clone().into_iter())
-        .map(|(_, status)| {
-            let pool = pool.clone();
-            let home_server = home_server.clone();
-            let instance_collection = instance_collection.clone();
-            async move {
-                Federation::fetch_status(&status, &pool, &home_server, &instance_collection).await
-            }
-        })
-        .buffer_unordered(MAX_FUTURES)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .expect("Error fetching context statuses from queued statuses");
+            .map(|(_, status)| {
+                let pool = pool.clone();
+                let home_server = home_server.clone();
+                let instance_collection = instance_collection.clone();
+                async move {
+                    Federation::fetch_status(&status, &pool, &home_server, &instance_collection)
+                        .await
+                }
+            })
+            .buffer_unordered(MAX_FUTURES)
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()
+            .expect("Error fetching context statuses from queued statuses");
         for (_, status) in queued_trending_statuses.clone() {
             Federation::modify_counts(&mut fetched_context_statuses, status);
         }
