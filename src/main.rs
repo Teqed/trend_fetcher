@@ -231,7 +231,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         "Queued context statuses: {}",
         queued_trending_statuses.len()
     );
-    stream::iter(queued_trending_statuses.clone().into_iter())
+    let mut fetched_context_statuses = HashMap::new();
+    let mut queued_context_statuses = queued_trending_statuses.clone();
+    while !queued_context_statuses.is_empty() {
+        info!(
+            "Queued context statuses: {}",
+            queued_context_statuses.len()
+        );
+        let some_context = stream::iter(queued_trending_statuses.clone().into_iter())
         .map(|(_, status)| {
             let pool = pool.clone();
             let home_server = home_server.clone();
@@ -246,13 +253,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .into_iter()
         .collect::<Result<Vec<_>, _>>()
         .expect("Error fetching context statuses from queued statuses");
+        for (_, status) in queued_trending_statuses.clone() {
+            Federation::modify_counts(&mut fetched_context_statuses, status);
+        }
+        queued_trending_statuses.clear();
+        for status_map in some_context {
+            for (_, status) in status_map {
+                if fetched_context_statuses.contains_key(&status.uri.to_string()) {
+                    Federation::modify_counts(&mut fetched_context_statuses, status);
+                    continue;
+                }
+                Federation::modify_counts(&mut queued_context_statuses, status);
+            }
+        }
+    }
 
     info!("{}", "All OK!".green());
     info!(
         "We saw {} trending statuses",
         length_of_queued_trending_statuses
     );
-    // info!("We saw {} context statuses", fetched_context_statuses.len());
+    info!("We saw {} context statuses", fetched_context_statuses.len());
     let end = time::OffsetDateTime::now_utc();
     let duration = end - start;
     info!("Duration: {duration}");

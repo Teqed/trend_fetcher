@@ -4,7 +4,6 @@ use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
 
 use crate::PAGE;
-use async_recursion::async_recursion;
 use colored::Colorize;
 use sqlx::postgres::PgPool;
 use tracing::{debug, error, info, warn};
@@ -196,18 +195,18 @@ impl Federation {
     }
 
     /// Fetches a status from the specified URI.
-    #[async_recursion]
     pub async fn fetch_status(
         status: &Status,
         pool: &PgPool,
         home_server: &Mastodon,
         instance_collection: &HashMap<String, Mastodon>,
-    ) -> Result<()> {
+    ) -> Result<HashMap<String, Status>> {
         info!("Status: {}", &status.uri);
+        let mut additional_context_statuses = HashMap::new();
         let status_id = Self::find_status_id(status.uri.as_ref(), pool, home_server).await;
         if status_id.is_err() {
             warn!("Status not found by home server, skipping: {}", &status.uri);
-            return Ok(());
+            return Ok(additional_context_statuses);
         }
         let status_id = status_id.expect("should be status ID");
 
@@ -216,7 +215,7 @@ impl Federation {
             && status.favourites_count == 0
         {
             debug!("Status has no interactions, skipping: {}", &status.uri);
-            return Ok(());
+            return Ok(additional_context_statuses);
         }
         debug!("Status found in database: {}", &status.uri);
         let select_statement = sqlx::query!(
@@ -224,7 +223,6 @@ impl Federation {
             status_id
         );
         let select_statement = select_statement.fetch_one(pool).await;
-
         let offset_date_time = time::OffsetDateTime::now_utc();
         let current_time =
             time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
@@ -251,7 +249,7 @@ impl Federation {
             let insert_statement = insert_statement.execute(pool).await;
             if let Err(err) = insert_statement {
                 error!("Error inserting status: {err}");
-                return Ok(());
+                return Ok(additional_context_statuses);
             }
             if status.replies_count > 0 {
                 debug!("Fetching context for status: {}", &status.uri);
@@ -275,12 +273,12 @@ impl Federation {
                 // We can't process these quite yet, so skip them
                 if !original_id_string.chars().all(char::is_alphanumeric) {
                     warn!("Original ID is not alphanumeric, skipping: {original_id}");
-                    return Ok(());
+                    return Ok(additional_context_statuses);
                 }
                 debug!("Original ID: {original_id}");
                 if status.in_reply_to_id.is_some() {
                     debug!("Status is a reply, skipping: {}", &status.uri);
-                    return Ok(());
+                    return Ok(additional_context_statuses);
                 }
                 let base_server = reqwest::Url::parse(status.uri.as_ref())
                     .expect("should be status URI")
@@ -294,7 +292,7 @@ impl Federation {
                     let fetching = remote.get_context(&original_id).await;
                     if fetching.is_err() {
                         error!("Error fetching context");
-                        return Ok(());
+                        return Ok(additional_context_statuses);
                     }
                     fetching.expect("should be Context of Status")
                 } else {
@@ -308,12 +306,12 @@ impl Federation {
                             "Error HTTP:".red(),
                             response.expect_err("Context of Status")
                         );
-                        return Ok(());
+                        return Ok(additional_context_statuses);
                     }
                     let response = response.expect("should be Context of Status");
                     if !response.status().is_success() {
                         error!("{} {}", "Error HTTP:".red(), response.status());
-                        return Ok(());
+                        return Ok(additional_context_statuses);
                     }
                     let json = response.text().await.expect("should be Context of Status");
                     let context = serde_json::from_str::<Context>(&json);
@@ -354,7 +352,7 @@ impl Federation {
                         // std::io::stdin()
                         //     .read_line(&mut input)
                         //     .expect("should be able to read line");
-                        return Ok(());
+                        return Ok(additional_context_statuses);
                     }
                     context.expect("should be Context of Status")
                 };
@@ -377,16 +375,16 @@ impl Federation {
                 //     .or_insert(ancestor_status);
                 // }
                 for descendant_status in context.descendants {
-                    let _ = Self::fetch_status(
-                        &descendant_status,
-                        pool,
-                        home_server,
-                        instance_collection,
-                    )
-                    .await;
-                    //
-                    //     .entry(descendant_status.uri.clone())
-                    //     .or_insert(descendant_status);
+                    // let _ = Self::fetch_status(
+                    //     &descendant_status,
+                    //     pool,
+                    //     home_server,
+                    //     instance_collection,
+                    // )
+                    // .await;
+                    additional_context_statuses
+                        .entry(descendant_status.uri.to_string().clone())
+                        .or_insert(descendant_status);
                 }
             }
         } else {
@@ -399,7 +397,7 @@ impl Federation {
                 && (status.favourites_count <= old_favourites_count)
             {
                 debug!("Status found in status_stats table, but we don't have larger counts, skipping: {}", &status.uri);
-                return Ok(());
+                return Ok(additional_context_statuses);
             }
             debug!(
                 "Status found in status_stats table, updating it: {}",
@@ -427,7 +425,7 @@ impl Federation {
             let update_statement = update_statement.execute(pool).await;
             if let Err(err) = update_statement {
                 error!("Error updating status: {err}");
-                return Ok(());
+                return Ok(additional_context_statuses);
             }
             if status.replies_count > old_replies_count {
                 debug!("Fetching context for status: {}", &status.uri);
@@ -451,12 +449,12 @@ impl Federation {
                 // We can't process these quite yet, so skip them
                 if !original_id_string.chars().all(char::is_alphanumeric) {
                     warn!("Original ID is not alphanumeric, skipping: {original_id}");
-                    return Ok(());
+                    return Ok(additional_context_statuses);
                 }
                 debug!("Original ID: {original_id}");
                 if status.in_reply_to_id.is_some() {
                     debug!("Status is a reply, skipping: {}", &status.uri);
-                    return Ok(());
+                    return Ok(additional_context_statuses);
                 }
                 let base_server = reqwest::Url::parse(status.uri.as_ref())
                     .expect("should be Status URI")
@@ -470,7 +468,7 @@ impl Federation {
                     let fetching = remote.get_context(&original_id).await;
                     if fetching.is_err() {
                         error!("Error fetching context");
-                        return Ok(());
+                        return Ok(additional_context_statuses);
                     }
                     fetching.expect("should be Context of Status")
                 } else {
@@ -484,12 +482,12 @@ impl Federation {
                             "Error HTTP:".red(),
                             response.expect_err("Context of Status")
                         );
-                        return Ok(());
+                        return Ok(additional_context_statuses);
                     }
                     let response = response.expect("should be Context of Status");
                     if !response.status().is_success() {
                         error!("{} {}", "Error HTTP:".red(), response.status());
-                        return Ok(());
+                        return Ok(additional_context_statuses);
                     }
                     let json = response.text().await.expect("should be Context of Status");
                     let context = serde_json::from_str::<Context>(&json);
@@ -530,7 +528,7 @@ impl Federation {
                         // std::io::stdin()
                         //     .read_line(&mut input)
                         //     .expect("should be able to read line");
-                        return Ok(());
+                        return Ok(additional_context_statuses);
                     }
                     context.expect("should be Context of Status")
                 };
@@ -553,20 +551,20 @@ impl Federation {
                 //         .or_insert(ancestor_status);
                 // }
                 for descendant_status in context.descendants {
-                    let _ = Self::fetch_status(
-                        &descendant_status,
-                        pool,
-                        home_server,
-                        instance_collection,
-                    )
-                    .await;
-
-                    // .entry(descendant_status.uri.clone())
-                    // .or_insert(descendant_status);
+                    // let _ = Self::fetch_status(
+                    //     &descendant_status,
+                    //     pool,
+                    //     home_server,
+                    //     instance_collection,
+                    // )
+                    // .await;
+                    additional_context_statuses
+                    .entry(descendant_status.uri.to_string().clone())
+                    .or_insert(descendant_status);
                 }
             }
         }
         debug!("{}", format!("Fetched {} OK!", &status.uri).green());
-        Ok(())
+        Ok(additional_context_statuses)
     }
 }
