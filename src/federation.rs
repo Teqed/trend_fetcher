@@ -93,35 +93,7 @@ impl Federation {
                 warn!("Parsing Issue on Trending JSON");
                 let error = trending_statuses_raw.expect_err("Trending statuses error");
                 error!("Error JSON: {}", error);
-                let column = error
-                    .to_string()
-                    .split("column ")
-                    .last()
-                    .expect("should be column")
-                    .parse::<usize>()
-                    .expect("should be usize");
-                let json = json.as_bytes();
-                let mut start = column;
-                let mut end = column;
-                for _ in 0..1000 {
-                    if start == 0 {
-                        break;
-                    }
-                    start -= 1;
-                }
-                for _ in 0..1000 {
-                    if end == json.len() {
-                        break;
-                    }
-                    end += 1;
-                }
-                let json = String::from_utf8_lossy(&json[start..end]);
-                error!("Error JSON preview window: {}", json);
-                // wait until 'enter' is pressed
-                // let mut input = String::new();
-                // std::io::stdin()
-                //     .read_line(&mut input)
-                //     .expect("should be able to read line");
+                json_window(&error, &json);
                 break;
             }
             let trending_statuses: Vec<_> =
@@ -198,19 +170,18 @@ impl Federation {
         pool: &PgPool,
         home_server: &Mastodon,
         instance_collection: &HashMap<String, Mastodon>,
-    ) -> Result<HashMap<String, Status>> {
+    ) -> Result<Option<HashMap<String, Status>>> {
         info!("Status: {}", &status.uri);
         let mut additional_context_statuses = HashMap::new();
         let status_id = Self::find_status_id(status.uri.as_ref(), pool, home_server).await;
         if status_id.is_err() {
             warn!("Status not found by home server, skipping: {}", &status.uri);
-            return Ok(additional_context_statuses);
+            return Ok(None);
         }
         let status_id = status_id.expect("should be status ID");
-
         if status.reblogs_count == 0 && status.replies_count <= 0 && status.favourites_count == 0 {
             debug!("Status has no interactions, skipping: {}", &status.uri);
-            return Ok(additional_context_statuses);
+            return Ok(None);
         }
         debug!("Status found in database: {}", &status.uri);
         let select_statement = sqlx::query!(
@@ -218,348 +189,281 @@ impl Federation {
             status_id
         );
         let select_statement = select_statement.fetch_one(pool).await;
-        let offset_date_time = time::OffsetDateTime::now_utc();
-        let current_time =
-            time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
-        if select_statement.is_err() {
-            debug!(
-                "Status not found in status_stats table, inserting it: {}",
-                &status.uri
-            );
-            let insert_statement = sqlx::query!(
-                r#"INSERT INTO status_stats (status_id, reblogs_count, replies_count, favourites_count, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"#,
-                status_id,
-                status.reblogs_count.try_into().unwrap_or_else(|_| {
-                    warn!("Failed to convert reblogs_count to i64");
-                    0
-                }),
-                0,
-                status.favourites_count.try_into().unwrap_or_else(|_| {
-                    warn!("Failed to convert favourites_count to i64");
-                    0
-                }),
-                current_time,
-                current_time
-            );
-            let insert_statement = insert_statement.execute(pool).await;
-            if let Err(err) = insert_statement {
-                error!("Error inserting status: {err}");
-                return Ok(additional_context_statuses);
-            }
-            if status.replies_count > 0 {
-                debug!("Fetching context for status: {}", &status.uri);
-                let original_id = StatusId::new(
-                    status
-                        .uri
-                        .to_string()
-                        .split('/')
-                        .last()
-                        .expect("should be status ID")
-                        .to_string(),
-                );
-                let original_id_string = &status
-                    .uri
-                    .to_string()
-                    .split('/')
-                    .last()
-                    .expect("should be status ID")
-                    .to_string();
-                // If the original ID isn't alphanumeric, it's probably for a non-Mastodon Fediverse server
-                // We can't process these quite yet, so skip them
-                if !original_id_string.chars().all(char::is_alphanumeric) {
-                    warn!("Original ID is not alphanumeric, skipping: {original_id}");
-                    return Ok(additional_context_statuses);
-                }
-                debug!("Original ID: {original_id}");
-                if status.in_reply_to_id.is_some() {
-                    debug!("Status is a reply, skipping: {}", &status.uri);
-                    return Ok(additional_context_statuses);
-                }
-                let base_server = reqwest::Url::parse(status.uri.as_ref())
-                    .expect("should be status URI")
-                    .host_str()
-                    .expect("should be base server string")
-                    .to_string();
-                let context = if instance_collection.contains_key(&base_server) {
-                    let remote = instance_collection
-                        .get(&base_server)
-                        .expect("should be Mastodon instance");
-                    let fetching = remote.get_context(&original_id).await;
-                    if fetching.is_err() {
-                        error!("Error fetching context");
-                        return Ok(additional_context_statuses);
+        match select_statement {
+            Ok(record) => {
+                let reblogs_count = record.reblogs_count;
+                let replies_count = record.replies_count;
+                let favourites_count = record.favourites_count;
+                let descendants = update_status(
+                    reblogs_count,
+                    replies_count,
+                    favourites_count,
+                    status,
+                    status_id,
+                    pool,
+                    instance_collection,
+                )
+                .await;
+                if let Some(descendant_status) = descendants {
+                    for child in descendant_status {
+                        additional_context_statuses
+                            .entry(child.uri.to_string().clone())
+                            .or_insert(child);
                     }
-                    fetching.expect("should be Context of Status")
-                } else {
-                    let url_string = format!(
-                        "https://{base_server}/api/v1/statuses/{original_id_string}/context"
-                    );
-                    let response = reqwest::Client::new().get(&url_string).send().await;
-                    if response.is_err() {
-                        error!(
-                            "{} {}",
-                            "Error HTTP:".red(),
-                            response.expect_err("Context of Status")
-                        );
-                        return Ok(additional_context_statuses);
-                    }
-                    let response = response.expect("should be Context of Status");
-                    if !response.status().is_success() {
-                        error!("{} {}", "Error HTTP:".red(), response.status());
-                        return Ok(additional_context_statuses);
-                    }
-                    let json = response.text().await.expect("should be Context of Status");
-                    let context = serde_json::from_str::<Context>(&json);
-                    if let Err(err) = context {
-                        error!("{} {err}", "Error JSON:".red());
-                        let column = err
-                            .to_string()
-                            .split("column ")
-                            .last()
-                            .expect("should be column")
-                            .parse::<usize>()
-                            .expect("should be usize");
-                        let json = json.as_bytes();
-                        let mut start = column;
-                        let mut end = column;
-                        for _ in 0..50 {
-                            if start == 0 {
-                                break;
-                            }
-                            start -= 1;
-                            if json[start] == b',' {
-                                break;
-                            }
-                        }
-                        for _ in 0..50 {
-                            if end == json.len() {
-                                break;
-                            }
-                            end += 1;
-                            if json[end] == b',' {
-                                break;
-                            }
-                        }
-                        let json = String::from_utf8_lossy(&json[start..end]);
-                        error!("Error JSON preview window: {}", json);
-                        // wait until 'enter' is pressed
-                        // let mut input = String::new();
-                        // std::io::stdin()
-                        //     .read_line(&mut input)
-                        //     .expect("should be able to read line");
-                        return Ok(additional_context_statuses);
-                    }
-                    context.expect("should be Context of Status")
-                };
-                info!(
-                    "Fetched context for status: {}, ancestors: {}, descendants: {}",
-                    &status.uri,
-                    context.ancestors.len(),
-                    context.descendants.len()
-                );
-                // for ancestor_status in context.ancestors {
-                // let _ = Self::fetch_status(
-                //     &ancestor_status,
-                //     pool,
-                //     home_server,
-                //     instance_collection,
-                // )
-                // .await;
-                //
-                //     .entry(ancestor_status.uri.clone())
-                //     .or_insert(ancestor_status);
-                // }
-                for descendant_status in context.descendants {
-                    // let _ = Self::fetch_status(
-                    //     &descendant_status,
-                    //     pool,
-                    //     home_server,
-                    //     instance_collection,
-                    // )
-                    // .await;
-                    additional_context_statuses
-                        .entry(descendant_status.uri.to_string().clone())
-                        .or_insert(descendant_status);
                 }
             }
-        } else {
-            let record = select_statement.expect("should be fetched record from database");
-            let old_reblogs_count = record.reblogs_count;
-            let old_replies_count = record.replies_count;
-            let old_favourites_count = record.favourites_count;
-            if (status.reblogs_count <= old_reblogs_count)
-                && (status.replies_count <= old_replies_count)
-                && (status.favourites_count <= old_favourites_count)
-            {
-                debug!("Status found in status_stats table, but we don't have larger counts, skipping: {}", &status.uri);
-                return Ok(additional_context_statuses);
-            }
-            debug!(
-                "Status found in status_stats table, updating it: {}",
-                &status.uri
-            );
-            let update_statement = sqlx::query!(
-                r#"UPDATE status_stats SET reblogs_count = $1, favourites_count = $2, updated_at = $3 WHERE status_id = $4"#,
-                std::cmp::max(
-                    status.reblogs_count.try_into().unwrap_or_else(|_| {
-                        warn!("Failed to convert reblogs_count to i64");
-                        0
-                    }),
-                    record.reblogs_count
-                ),
-                std::cmp::max(
-                    status.favourites_count.try_into().unwrap_or_else(|_| {
-                        warn!("Failed to convert favourites_count to i64");
-                        0
-                    }),
-                    record.favourites_count
-                ),
-                current_time,
-                status_id
-            );
-            let update_statement = update_statement.execute(pool).await;
-            if let Err(err) = update_statement {
-                error!("Error updating status: {err}");
-                return Ok(additional_context_statuses);
-            }
-            if status.replies_count > old_replies_count {
-                debug!("Fetching context for status: {}", &status.uri);
-                let original_id = StatusId::new(
-                    status
-                        .uri
-                        .to_string()
-                        .split('/')
-                        .last()
-                        .expect("should be Status ID")
-                        .to_string(),
+            Err(err) => {
+                debug!("Error fetching status_stats: {err}");
+                debug!(
+                    "Status not found in status_stats table, inserting it: {}",
+                    &status.uri
                 );
-                let original_id_string = &status
-                    .uri
-                    .to_string()
-                    .split('/')
-                    .last()
-                    .expect("should be Status ID")
-                    .to_string();
-                // If the original ID isn't alphanumeric, it's probably for a non-Mastodon Fediverse server
-                // We can't process these quite yet, so skip them
-                if !original_id_string.chars().all(char::is_alphanumeric) {
-                    warn!("Original ID is not alphanumeric, skipping: {original_id}");
-                    return Ok(additional_context_statuses);
-                }
-                debug!("Original ID: {original_id}");
-                if status.in_reply_to_id.is_some() {
-                    debug!("Status is a reply, skipping: {}", &status.uri);
-                    return Ok(additional_context_statuses);
-                }
-                let base_server = reqwest::Url::parse(status.uri.as_ref())
-                    .expect("should be Status URI")
-                    .host_str()
-                    .expect("should be base server string")
-                    .to_string();
-                let context = if instance_collection.contains_key(&base_server) {
-                    let remote = instance_collection
-                        .get(&base_server)
-                        .expect("should be Mastodon instance");
-                    let fetching = remote.get_context(&original_id).await;
-                    if fetching.is_err() {
-                        error!("Error fetching context");
-                        return Ok(additional_context_statuses);
+                let descendants = insert_status(status_id, status, pool, instance_collection).await;
+                if let Some(descendant_status) = descendants {
+                    for child in descendant_status {
+                        additional_context_statuses
+                            .entry(child.uri.to_string().clone())
+                            .or_insert(child);
                     }
-                    fetching.expect("should be Context of Status")
-                } else {
-                    let url_string = format!(
-                        "https://{base_server}/api/v1/statuses/{original_id_string}/context"
-                    );
-                    let response = reqwest::Client::new().get(&url_string).send().await;
-                    if response.is_err() {
-                        error!(
-                            "{} {}",
-                            "Error HTTP:".red(),
-                            response.expect_err("Context of Status")
-                        );
-                        return Ok(additional_context_statuses);
-                    }
-                    let response = response.expect("should be Context of Status");
-                    if !response.status().is_success() {
-                        error!("{} {}", "Error HTTP:".red(), response.status());
-                        return Ok(additional_context_statuses);
-                    }
-                    let json = response.text().await.expect("should be Context of Status");
-                    let context = serde_json::from_str::<Context>(&json);
-                    if let Err(err) = context {
-                        error!("{} {err}", "Error JSON:".red());
-                        let column = err
-                            .to_string()
-                            .split("column ")
-                            .last()
-                            .expect("should be column")
-                            .parse::<usize>()
-                            .expect("should be usize");
-                        let json = json.as_bytes();
-                        let mut start = column;
-                        let mut end = column;
-                        for _ in 0..50 {
-                            if start == 0 {
-                                break;
-                            }
-                            start -= 1;
-                            if json[start] == b',' {
-                                break;
-                            }
-                        }
-                        for _ in 0..50 {
-                            if end == json.len() {
-                                break;
-                            }
-                            end += 1;
-                            if json[end] == b',' {
-                                break;
-                            }
-                        }
-                        let json = String::from_utf8_lossy(&json[start..end]);
-                        error!("Error JSON preview window: {}", json);
-                        // wait until 'enter' is pressed
-                        // let mut input = String::new();
-                        // std::io::stdin()
-                        //     .read_line(&mut input)
-                        //     .expect("should be able to read line");
-                        return Ok(additional_context_statuses);
-                    }
-                    context.expect("should be Context of Status")
-                };
-                info!(
-                    "Fetched context for status: {}, ancestors: {}, descendants: {}",
-                    &status.uri,
-                    context.ancestors.len(),
-                    context.descendants.len()
-                );
-                // for ancestor_status in context.ancestors {
-                // let _ = Self::fetch_status(
-                //     &ancestor_status,
-                //     pool,
-                //     home_server,
-                //     instance_collection,
-                // )
-                // .await;
-                //
-                //         .entry(ancestor_status.uri.clone())
-                //         .or_insert(ancestor_status);
-                // }
-                for descendant_status in context.descendants {
-                    // let _ = Self::fetch_status(
-                    //     &descendant_status,
-                    //     pool,
-                    //     home_server,
-                    //     instance_collection,
-                    // )
-                    // .await;
-                    additional_context_statuses
-                        .entry(descendant_status.uri.to_string().clone())
-                        .or_insert(descendant_status);
                 }
             }
         }
         debug!("{}", format!("Fetched {} OK!", &status.uri).green());
-        Ok(additional_context_statuses)
+        Ok(Some(additional_context_statuses))
     }
+}
+
+async fn update_status(
+    reblogs_count: i64,
+    replies_count: i64,
+    favourites_count: i64,
+    status: &Status,
+    status_id: i64,
+    pool: &sqlx::Pool<sqlx::Postgres>,
+    instance_collection: &HashMap<String, Mastodon>,
+) -> Option<Vec<Status>> {
+    let offset_date_time = time::OffsetDateTime::now_utc();
+    let current_time =
+        time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
+    if (status.reblogs_count <= reblogs_count)
+        && (status.replies_count <= replies_count)
+        && (status.favourites_count <= favourites_count)
+    {
+        debug!(
+            "Status found in status_stats table, but we don't have larger counts, skipping: {}",
+            &status.uri
+        );
+        return None;
+    }
+    debug!(
+        "Status found in status_stats table, updating it: {}",
+        &status.uri
+    );
+    let update_statement = sqlx::query!(
+        r#"UPDATE status_stats SET reblogs_count = $1, favourites_count = $2, updated_at = $3 WHERE status_id = $4"#,
+        std::cmp::max(
+            status.reblogs_count.try_into().unwrap_or_else(|_| {
+                warn!("Failed to convert reblogs_count to i64");
+                0
+            }),
+            reblogs_count
+        ),
+        std::cmp::max(
+            status.favourites_count.try_into().unwrap_or_else(|_| {
+                warn!("Failed to convert favourites_count to i64");
+                0
+            }),
+            favourites_count
+        ),
+        current_time,
+        status_id
+    );
+    let update_statement = update_statement.execute(pool).await;
+    if let Err(err) = update_statement {
+        error!("Error updating status: {err}");
+        return None;
+    }
+    if status.replies_count > replies_count {
+        let descendants = get_status_descendants(status, instance_collection).await;
+        if descendants.is_none() {
+            warn!("Error fetching descendants");
+            return None;
+        }
+        let descendants = descendants.expect("should be descendants");
+        return Some(descendants);
+    }
+    None
+}
+
+async fn insert_status(
+    status_id: i64,
+    status: &Status,
+    pool: &sqlx::Pool<sqlx::Postgres>,
+    instance_collection: &HashMap<String, Mastodon>,
+) -> Option<Vec<Status>> {
+    let offset_date_time = time::OffsetDateTime::now_utc();
+    let current_time =
+        time::PrimitiveDateTime::new(offset_date_time.date(), offset_date_time.time());
+    let insert_statement = sqlx::query!(
+        r#"INSERT INTO status_stats (status_id, reblogs_count, replies_count, favourites_count, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6)"#,
+        status_id,
+        status.reblogs_count.try_into().unwrap_or_else(|_| {
+            warn!("Failed to convert reblogs_count to i64");
+            0
+        }),
+        0,
+        status.favourites_count.try_into().unwrap_or_else(|_| {
+            warn!("Failed to convert favourites_count to i64");
+            0
+        }),
+        current_time,
+        current_time
+    );
+    let insert_statement = insert_statement.execute(pool).await;
+    if let Err(err) = insert_statement {
+        error!("Error inserting status: {err}");
+        return None;
+    }
+    if status.replies_count > 0 {
+        let descendants = get_status_descendants(status, instance_collection).await;
+        if descendants.is_none() {
+            warn!("Error fetching descendants");
+            return None;
+        }
+        let descendants = descendants.expect("should be descendants");
+        return Some(descendants);
+    }
+    None
+}
+
+async fn get_status_descendants(
+    status: &Status,
+    instance_collection: &HashMap<String, Mastodon>,
+) -> Option<Vec<Status>> {
+    debug!("Fetching context for status: {}", &status.uri);
+    let original_id = StatusId::new(
+        status
+            .uri
+            .to_string()
+            .split('/')
+            .last()
+            .expect("should be Status ID")
+            .to_string(),
+    );
+    let original_id_string = &status
+        .uri
+        .to_string()
+        .split('/')
+        .last()
+        .expect("should be Status ID")
+        .to_string();
+    if !original_id_string.chars().all(char::is_alphanumeric) {
+        warn!("Original ID is not alphanumeric, skipping: {original_id}");
+        return None;
+    }
+    debug!("Original ID: {original_id}");
+    if status.in_reply_to_id.is_some() {
+        debug!("Status is a reply, skipping: {}", &status.uri);
+        return None;
+    }
+    let base_server = reqwest::Url::parse(status.uri.as_ref())
+        .expect("should be Status URI")
+        .host_str()
+        .expect("should be base server string")
+        .to_string();
+    let Some(context) = get_status_context(instance_collection, base_server, original_id).await
+    else {
+        warn!("Error fetching context");
+        return None;
+    };
+    info!(
+        "Fetched context for status: {}, ancestors: {}, descendants: {}",
+        &status.uri,
+        context.ancestors.len(),
+        context.descendants.len()
+    );
+    Some(context.descendants)
+}
+
+async fn get_status_context(
+    instance_collection: &HashMap<String, Mastodon>,
+    base_server: String,
+    original_id: StatusId,
+) -> Option<Context> {
+    let original_id_string = &original_id.to_string();
+    let context = if instance_collection.contains_key(&base_server) {
+        let remote = instance_collection
+            .get(&base_server)
+            .expect("should be Mastodon instance");
+        let fetching = remote.get_context(&original_id).await;
+        if fetching.is_err() {
+            error!("Error fetching context");
+            return None;
+        }
+        fetching.expect("should be Context of Status")
+    } else {
+        let url_string =
+            format!("https://{base_server}/api/v1/statuses/{original_id_string}/context");
+        let response = reqwest::Client::new().get(&url_string).send().await;
+        if response.is_err() {
+            error!(
+                "{} {}",
+                "Error HTTP:".red(),
+                response.expect_err("Context of Status")
+            );
+            return None;
+        }
+        let response = response.expect("should be Context of Status");
+        if !response.status().is_success() {
+            error!("{} {}", "Error HTTP:".red(), response.status());
+            return None;
+        }
+        let json = response.text().await.expect("should be Context of Status");
+        let context = serde_json::from_str::<Context>(&json);
+        if let Err(err) = context {
+            error!("{} {err}", "Error JSON:".red());
+            json_window(&err, &json);
+            return None;
+        }
+        context.expect("should be Context of Status")
+    };
+    Some(context)
+}
+
+fn json_window(err: &serde_json::Error, json: &String) {
+    let column = err
+        .to_string()
+        .split("column ")
+        .last()
+        .expect("should be column")
+        .parse::<usize>()
+        .expect("should be usize");
+    let json = json.as_bytes();
+    let mut start = column;
+    let mut end = column;
+    for _ in 0..50 {
+        if start == 0 {
+            break;
+        }
+        start -= 1;
+        if json[start] == b',' {
+            break;
+        }
+    }
+    for _ in 0..50 {
+        if end == json.len() {
+            break;
+        }
+        end += 1;
+        if json[end] == b',' {
+            break;
+        }
+    }
+    let json = String::from_utf8_lossy(&json[start..end]);
+    error!("Error JSON preview window: {}", json);
+    // wait until 'enter' is pressed
+    let mut input = String::new();
+    std::io::stdin()
+        .read_line(&mut input)
+        .expect("should be able to read line");
 }

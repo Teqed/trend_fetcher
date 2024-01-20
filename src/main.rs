@@ -254,7 +254,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         queued_trending_statuses.clear();
         for status_map in some_context {
-            for (_, status) in status_map {
+            if status_map.is_none() {
+                continue;
+            }
+            for (_, status) in status_map.expect("should be a status map") {
                 if fetched_context_statuses.contains_key(&status.uri.to_string()) {
                     Federation::modify_counts(&mut fetched_context_statuses, status);
                     continue;
