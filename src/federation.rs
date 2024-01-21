@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use async_recursion::async_recursion;
 
-use mastodon_async::entities::search_result;
 use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
 
