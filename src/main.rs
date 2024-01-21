@@ -122,7 +122,7 @@ mod federation;
 /// The number of statuses to fetch per page, a maximum defined by the Mastodon API.
 const PAGE: usize = 40;
 /// The maximum number of futures to run concurrently.
-const MAX_FUTURES: usize = 5;
+const MAX_FUTURES: usize = 15;
 
 #[tokio::main]
 #[tracing::instrument]

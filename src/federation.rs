@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use async_recursion::async_recursion;
 
+use mastodon_async::entities::search_result;
 use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
 
@@ -86,7 +88,7 @@ impl Federation {
                 break;
             }
             let json = response.text().await.expect("should be trending statuses");
-            info!("Reading Trending JSON");
+            info!("Reading Trending JSON from {}", url);
             let trending_statuses_raw: std::prelude::v1::Result<Vec<Status>, serde_json::Error> =
                 serde_json::from_str(&json);
             if trending_statuses_raw.is_err() {
@@ -109,6 +111,7 @@ impl Federation {
     }
 
     /// Find the status ID for a given URI from the home instance's database.
+    #[async_recursion]
     pub async fn find_status_id(uri: &str, pool: &PgPool, home_instance: &Mastodon) -> Result<i64> {
         let select_statement = sqlx::query!(r#"SELECT id FROM statuses WHERE uri = $1"#, uri)
             .fetch_one(pool)
@@ -120,8 +123,8 @@ impl Federation {
             debug!("Status not found in database, searching for it: {uri}");
             let search_result = home_instance.search(uri, true).await;
             if search_result.is_err() {
-                let message: String = format!("Status not found by home server: {uri}");
-                return Err(mastodon_async::Error::Other(message));
+                warn!("Error searching for status: {uri}");
+                return Err(search_result.expect_err("should be search result"));
             }
             let search_result = search_result.expect("should be search result");
             if search_result.statuses.is_empty() {
@@ -441,29 +444,23 @@ fn json_window(err: &serde_json::Error, json: &String) {
     let json = json.as_bytes();
     let mut start = column;
     let mut end = column;
-    for _ in 0..50 {
+    for _ in 0..200 {
         if start == 0 {
             break;
         }
         start -= 1;
-        if json[start] == b',' {
-            break;
-        }
     }
-    for _ in 0..50 {
+    for _ in 0..200 {
         if end == json.len() {
             break;
         }
         end += 1;
-        if json[end] == b',' {
-            break;
-        }
     }
     let json = String::from_utf8_lossy(&json[start..end]);
     error!("Error JSON preview window: {}", json);
     // wait until 'enter' is pressed
-    let mut input = String::new();
-    std::io::stdin()
-        .read_line(&mut input)
-        .expect("should be able to read line");
+    // let mut input = String::new();
+    // std::io::stdin()
+    //     .read_line(&mut input)
+    //     .expect("should be able to read line");
 }
