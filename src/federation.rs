@@ -135,7 +135,7 @@ impl Federation {
                 .get(&search_url).bearer_auth(home_instance_token).send().await;
             if search_result.is_err() {
                 let received_error = search_result.expect_err("should be error");
-                error!("Error HTTP: {}", received_error);
+                error!("Error result: {}", received_error);
                 return Err(mastodon_async::Error::Other("Search for Status".to_string()));
             }
             let search_result = search_result.expect("should be search result");
@@ -219,6 +219,7 @@ impl Federation {
         let status_id = Self::find_status_id(status.uri.as_ref(), pool, home_server_url, home_server_token).await;
         if status_id.is_err() {
             warn!("Status not found by home server, skipping: {}", &status.uri);
+            warn!("Error: {}", status_id.expect_err("should be error"));
             return Ok(None);
         }
         let status_id = status_id.expect("should be status ID");
