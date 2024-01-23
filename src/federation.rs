@@ -9,6 +9,9 @@ use colored::Colorize;
 use sqlx::postgres::PgPool;
 use tracing::{debug, error, info, warn};
 
+use reqwest_middleware::ClientBuilder;
+use reqwest_retry_after::RetryAfterMiddleware;
+
 /// Struct for interacting with Fediverse APIs.
 pub struct Federation;
 
@@ -25,7 +28,7 @@ impl Federation {
         info!("First time registration with {server}");
         let url = format!("https://{server}");
         let registration = Registration::new(url)
-            .client_name("mastodon-async-examples")
+            .client_name("Mastodon API Client")
             .build()
             .await
             .expect("should be a Registration");
@@ -73,11 +76,15 @@ impl Federation {
             let mut params = HashMap::new();
             params.insert("offset", offset.to_string());
             params.insert("limit", limit.to_string());
-            let response = reqwest::Client::new().get(&url).query(&params).send().await;
+            let response = ClientBuilder::new(reqwest::Client::new())
+                .with(RetryAfterMiddleware::new())
+                .build()
+                .get(&url).query(&params).send().await;
             if response.is_err() {
                 error!(
-                    "Error HTTP: {}",
-                    response.expect_err("Trending statuses error")
+                    "Error HTTP: {} on {}",
+                    response.expect_err("Trending statuses error"),
+                    url.red()
                 );
                 warn!("Encountered on {}", url.red());
                 break;
@@ -88,7 +95,7 @@ impl Federation {
                 break;
             }
             let json = response.text().await.expect("should be trending statuses");
-            info!("Reading Trending JSON from {}", url);
+            debug!("Reading Trending JSON from {}", url);
             let trending_statuses_raw: std::prelude::v1::Result<Vec<Status>, serde_json::Error> =
                 serde_json::from_str(&json);
             if trending_statuses_raw.is_err() {
@@ -122,18 +129,33 @@ impl Federation {
         } else {
             debug!("Status not found in database, searching for it: {uri}");
             let search_url = format!("https://{home_instance_url}/api/v2/search?q={uri}&resolve=true");
-            let search_result = reqwest::Client::new().get(&search_url).bearer_auth(home_instance_token).send().await;
+            let search_result = ClientBuilder::new(reqwest::Client::new())
+                .with(RetryAfterMiddleware::new())
+                .build()
+                .get(&search_url).bearer_auth(home_instance_token).send().await;
             if search_result.is_err() {
                 let received_error = search_result.expect_err("should be error");
-                if received_error.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS) {
-                    warn!("Rate limited, waiting 5 minutes");
-                    return Self::find_status_id(uri, pool, home_instance_url, home_instance_token).await;
-                }
                 error!("Error HTTP: {}", received_error);
                 return Err(mastodon_async::Error::Other("Search for Status".to_string()));
             }
             let search_result = search_result.expect("should be search result");
             if !search_result.status().is_success() {
+                if (search_result.status().as_u16() == 429) || (search_result.status().to_string().contains("429")) {
+                    let retry_after = search_result
+                        .headers()
+                        .get("x-ratelimit-reset")
+                        .expect("should be x-ratelimit-reset")
+                        .to_str()
+                        .expect("should be str")
+                        .parse::<chrono::DateTime<chrono::Utc>>()
+                        .expect("should be chrono::DateTime<chrono::Utc>");
+                    let now = chrono::Utc::now();
+                    let duration = retry_after - now;
+                    let duration = duration.to_std().expect("should be std::time::Duration");
+                    info!("Sleeping for {duration} seconds", duration = duration.as_secs());
+                    tokio::time::sleep(duration).await;
+                    return Self::find_status_id(uri, pool, home_instance_url, home_instance_token).await;
+                }
                 error!("Error HTTP: {}", search_result.status());
                 return Err(mastodon_async::Error::Other("Search for Status".to_string()));
             }
@@ -192,7 +214,7 @@ impl Federation {
         home_server_token: &String,
         instance_collection: &HashMap<String, String>,
     ) -> Result<Option<HashMap<String, Status>>> {
-        info!("Status: {}", &status.uri);
+        debug!("Status: {}", &status.uri);
         let mut additional_context_statuses = HashMap::new();
         let status_id = Self::find_status_id(status.uri.as_ref(), pool, home_server_url, home_server_token).await;
         if status_id.is_err() {
@@ -383,10 +405,10 @@ async fn get_status_descendants(
         return None;
     }
     debug!("Original ID: {original_id}");
-    if status.in_reply_to_id.is_some() {
-        debug!("Status is a reply, skipping: {}", &status.uri);
-        return None;
-    }
+    // if status.in_reply_to_id.is_some() {
+    //     debug!("Status is a reply, skipping: {}", &status.uri);
+    //     return None;
+    // }
     let base_server = reqwest::Url::parse(status.uri.as_ref())
         .expect("should be Status URI")
         .host_str()
@@ -397,15 +419,18 @@ async fn get_status_descendants(
         warn!("Error fetching context");
         return None;
     };
-    info!(
+    debug!(
         "Fetched context for status: {}, ancestors: {}, descendants: {}",
         &status.uri,
         context.ancestors.len(),
         context.descendants.len()
     );
-    Some(context.descendants)
+    let mut combined_context = context.ancestors;
+    combined_context.extend(context.descendants);
+    Some(combined_context)
 }
 
+#[async_recursion]
 async fn get_status_context(
     instance_collection: &HashMap<String, String>,
     base_server: String,
@@ -418,22 +443,41 @@ async fn get_status_context(
     let instance_token = instance_collection
         .get(&base_server);
     if let Some(instance_token) = instance_token {
-        let response = reqwest::Client::new()
+        let response = ClientBuilder::new(reqwest::Client::new())
+            .with(RetryAfterMiddleware::new())
+            .build()
             .get(&url_string)
             .bearer_auth(instance_token)
             .send()
             .await;
         if response.is_err() {
             error!(
-                "{} {}",
-                "Error HTTP:".red(),
-                response.expect_err("Context of Status")
+                "{} {} from {}",
+                "Error result:".red(),
+                response.expect_err("Context of Status"),
+                &url_string
             );
             return None;
         }
         let response = response.expect("should be Context of Status");
         if !response.status().is_success() {
-            error!("{} {}", "Error HTTP:".red(), response.status());
+            if response.status().as_u16() == 429 {
+                let retry_after = response
+                    .headers()
+                    .get("x-ratelimit-reset")
+                    .expect("should be x-ratelimit-reset")
+                    .to_str()
+                    .expect("should be str")
+                    .parse::<chrono::DateTime<chrono::Utc>>()
+                    .expect("should be chrono::DateTime<chrono::Utc>");
+                let now = chrono::Utc::now();
+                let duration = retry_after - now;
+                let duration = duration.to_std().expect("should be std::time::Duration");
+                info!("Sleeping for {duration} seconds", duration = duration.as_secs());
+                tokio::time::sleep(duration).await;
+                return get_status_context(instance_collection, base_server, original_id).await;
+            }
+            error!("{} {} from {}", "Error HTTP:".red(), response.status(), &url_string);
             return None;
         }
         let json = response.text().await.expect("should be Context of Status");
@@ -445,18 +489,38 @@ async fn get_status_context(
         }
         return Some(context.expect("should be Context of Status"));
     }
-    let response = reqwest::Client::new().get(&url_string).send().await;
+    let response = ClientBuilder::new(reqwest::Client::new())
+        .with(RetryAfterMiddleware::new())
+        .build()
+        .get(&url_string).send().await;
     if response.is_err() {
         error!(
-            "{} {}",
-            "Error HTTP:".red(),
-            response.expect_err("Context of Status")
+            "{} {} from {}",
+            "Error result:".red(),
+            response.expect_err("Context of Status"),
+            &url_string
         );
         return None;
     }
     let response = response.expect("should be Context of Status");
     if !response.status().is_success() {
-        error!("{} {}", "Error HTTP:".red(), response.status());
+        if response.status().as_u16() == 429 {
+            let retry_after = response
+                .headers()
+                .get("x-ratelimit-reset")
+                .expect("should be x-ratelimit-reset")
+                .to_str()
+                .expect("should be str")
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .expect("should be chrono::DateTime<chrono::Utc>");
+            let now = chrono::Utc::now();
+            let duration = retry_after - now;
+            let duration = duration.to_std().expect("should be std::time::Duration");
+            info!("Sleeping for {duration} seconds", duration = duration.as_secs());
+            tokio::time::sleep(duration).await;
+            return get_status_context(instance_collection, base_server, original_id).await;
+        }
+        error!("{} {} from {}", "Error HTTP:".red(), response.status(), &url_string);
         return None;
     }
     let json = response.text().await.expect("should be Context of Status");
