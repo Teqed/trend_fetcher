@@ -81,6 +81,7 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
 use tracing::{debug, error, info, warn};
+use color_eyre::eyre::Result;
 
 #[derive(Deserialize)]
 /// Configuration struct for the application.
@@ -130,6 +131,7 @@ const MAX_FUTURES: usize = 15;
 async fn main() -> Result<(), Box<dyn Error>> {
     let start = time::OffsetDateTime::now_utc();
     debug!("Starting at {start}");
+    color_eyre::install()?;
     tracing::subscriber::set_global_default(tracing_subscriber::FmtSubscriber::new())
         .expect("should be default subscriber");
     let mut instance_collection = HashMap::new();
@@ -162,9 +164,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let mut queued_servers: HashSet<String> = HashSet::new();
     let home_server =
-        Federation::get_instance(&mut instance_collection, &config.servers.home).await;
+        Federation::get_instance_token(&mut instance_collection, &config.servers.home).await
+            .expect("Error getting instance token for home server");
     for server in config.servers.authenticated {
-        Federation::get_instance(&mut instance_collection, &server).await;
+        Federation::get_instance_token(&mut instance_collection, &server).await;
         queued_servers.insert(server);
     }
     config.servers.unauthenticated.iter().for_each(|server| {
@@ -231,39 +234,86 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
     let mut fetched_context_statuses = HashMap::new();
     let mut queued_context_statuses = queued_trending_statuses.clone();
+    // Concurrent block
+    // while !queued_context_statuses.is_empty() {
+    //     info!("Queued context statuses: {}", queued_context_statuses.len());
+    //     let some_context = stream::iter(queued_trending_statuses.clone().into_iter())
+    //         .map(|(_, status)| {
+    //             let home_server_url = config.servers.home.clone();
+    //             let home_server = home_server.clone();
+    //             let pool = pool.clone();
+    //             let instance_collection = instance_collection.clone();
+    //             async move {
+    //                 Federation::fetch_status(&status, &pool, &home_server_url, &home_server, &instance_collection)
+    //                     .await
+    //             }
+    //         })
+    //         .buffer_unordered(MAX_FUTURES)
+    //         .collect::<Vec<_>>()
+    //         .await
+    //         .into_iter()
+    //         .collect::<Result<Vec<_>, _>>()
+    //         .expect("Error fetching context statuses from queued statuses");
+    //     for (_, status) in queued_trending_statuses.clone() {
+    //         Federation::modify_counts(&mut fetched_context_statuses, status);
+    //     }
+    //     queued_trending_statuses.clear();
+    //     for status_map in some_context {
+    //         if status_map.is_none() {
+    //             continue;
+    //         }
+    //         for (_, status) in status_map.expect("should be a status map") {
+    //             if fetched_context_statuses.contains_key(&status.uri.to_string()) {
+    //                 Federation::modify_counts(&mut fetched_context_statuses, status);
+    //                 continue;
+    //             }
+    //             Federation::modify_counts(&mut queued_context_statuses, status);
+    //         }
+    //     }
+    // }
+    // Sequential block
     while !queued_context_statuses.is_empty() {
         info!("Queued context statuses: {}", queued_context_statuses.len());
-        let some_context = stream::iter(queued_trending_statuses.clone().into_iter())
-            .map(|(_, status)| {
-                let pool = pool.clone();
-                let home_server = home_server.clone();
-                let instance_collection = instance_collection.clone();
-                async move {
-                    Federation::fetch_status(&status, &pool, &home_server, &instance_collection)
-                        .await
+        let mut aux_context_statuses_hashmap = HashMap::new();
+        for (_, status) in queued_context_statuses.clone() {
+            let home_server_url = config.servers.home.clone();
+            let home_server = home_server.clone();
+            let pool = pool.clone();
+            let instance_collection = instance_collection.clone();
+            let status_map = Federation::fetch_status(
+                &status,
+                &pool,
+                &home_server_url,
+                &home_server,
+                &instance_collection,
+            )
+            .await;
+            match status_map {
+                Ok(Some(status_map)) => {
+                    for (key, value) in status_map {
+                        aux_context_statuses_hashmap.insert(key, value);
+                    }
                 }
-            })
-            .buffer_unordered(MAX_FUTURES)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .expect("Error fetching context statuses from queued statuses");
-        for (_, status) in queued_trending_statuses.clone() {
-            Federation::modify_counts(&mut fetched_context_statuses, status);
+                Ok(None) => {
+                    warn!(
+                        "{}",
+                        format!(
+                            "Status {} not found in database",
+                            status.uri.to_string().red()
+                        )
+                    );
+                }
+                Err(e) => {
+                    error!("{}", format!("{}", e.to_string().red()));
+                }
+            }
         }
-        queued_trending_statuses.clear();
-        for status_map in some_context {
-            if status_map.is_none() {
-                continue;
-            }
-            for (_, status) in status_map.expect("should be a status map") {
-                if fetched_context_statuses.contains_key(&status.uri.to_string()) {
-                    Federation::modify_counts(&mut fetched_context_statuses, status);
-                    continue;
-                }
-                Federation::modify_counts(&mut queued_context_statuses, status);
-            }
+        queued_context_statuses.clone().into_iter().for_each(|(_, value)| {
+            Federation::modify_counts(&mut fetched_context_statuses, value);
+        });
+        queued_context_statuses.clear();
+        for (_, value) in aux_context_statuses_hashmap {
+            Federation::modify_counts(&mut queued_context_statuses, value);
         }
     }
 

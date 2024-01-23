@@ -41,23 +41,24 @@ impl Federation {
     }
 
     /// Gets an instance from the instance collection, or registers it if it doesn't exist.
-    pub async fn get_instance(
-        instance_collection: &mut HashMap<String, Mastodon>,
+    pub async fn get_instance_token(
+        instance_collection: &mut HashMap<String, String>,
         server: &str,
-    ) -> Mastodon {
+    ) -> Option<String> {
         let server = server.strip_prefix("https://").unwrap_or(server);
         if !instance_collection.contains_key(server) {
             debug!("Registering instance: {server}");
             let instance = Self::register(server)
                 .await
                 .expect("should be registered instance");
-            instance_collection.insert(server.to_string(), instance.clone());
-            return instance;
+            let instance_token = instance.data.token.to_string();
+            instance_collection.insert(server.to_string(), instance_token.clone());
+            return Some(instance_token);
         }
-        instance_collection
+        Some(instance_collection
             .get(server)
             .expect("should be registered instance")
-            .clone()
+            .clone())
     }
 
     /// Fetches trending hashtags from the specified instance.
@@ -111,7 +112,7 @@ impl Federation {
 
     /// Find the status ID for a given URI from the home instance's database.
     #[async_recursion]
-    pub async fn find_status_id(uri: &str, pool: &PgPool, home_instance: &Mastodon) -> Result<i64> {
+    pub async fn find_status_id(uri: &str, pool: &PgPool, home_instance_url: &String, home_instance_token: &String) -> Result<i64> {
         let select_statement = sqlx::query!(r#"SELECT id FROM statuses WHERE uri = $1"#, uri)
             .fetch_one(pool)
             .await;
@@ -120,12 +121,29 @@ impl Federation {
             Ok(status.id)
         } else {
             debug!("Status not found in database, searching for it: {uri}");
-            let search_result = home_instance.search(uri, true).await;
+            let search_url = format!("https://{home_instance_url}/api/v2/search?q={uri}&resolve=true");
+            let search_result = reqwest::Client::new().get(&search_url).bearer_auth(home_instance_token).send().await;
             if search_result.is_err() {
-                warn!("Error searching for status: {uri}");
-                return Err(search_result.expect_err("should be search result"));
+                let received_error = search_result.expect_err("should be error");
+                if received_error.status() == Some(reqwest::StatusCode::TOO_MANY_REQUESTS) {
+                    warn!("Rate limited, waiting 5 minutes");
+                    return Self::find_status_id(uri, pool, home_instance_url, home_instance_token).await;
+                }
+                error!("Error HTTP: {}", received_error);
+                return Err(mastodon_async::Error::Other("Search for Status".to_string()));
             }
             let search_result = search_result.expect("should be search result");
+            if !search_result.status().is_success() {
+                error!("Error HTTP: {}", search_result.status());
+                return Err(mastodon_async::Error::Other("Search for Status".to_string()));
+            }
+            let search_result = search_result.text().await.expect("should be search result");
+            let search_result = serde_json::from_str::<SearchResult>(&search_result);
+            if let Err(err) = search_result {
+                error!("{} {err}", "Error JSON:".red());
+                return Err(mastodon_async::Error::Other("Search for Status".to_string()));
+            }
+            let search_result: SearchResult = search_result.expect("should be search result");
             if search_result.statuses.is_empty() {
                 let message: String = format!("Status not found by home server: {uri}");
                 return Err(mastodon_async::Error::Other(message));
@@ -170,12 +188,13 @@ impl Federation {
     pub async fn fetch_status(
         status: &Status,
         pool: &PgPool,
-        home_server: &Mastodon,
-        instance_collection: &HashMap<String, Mastodon>,
+        home_server_url: &String,
+        home_server_token: &String,
+        instance_collection: &HashMap<String, String>,
     ) -> Result<Option<HashMap<String, Status>>> {
         info!("Status: {}", &status.uri);
         let mut additional_context_statuses = HashMap::new();
-        let status_id = Self::find_status_id(status.uri.as_ref(), pool, home_server).await;
+        let status_id = Self::find_status_id(status.uri.as_ref(), pool, home_server_url, home_server_token).await;
         if status_id.is_err() {
             warn!("Status not found by home server, skipping: {}", &status.uri);
             return Ok(None);
@@ -242,7 +261,7 @@ async fn update_status(
     status: &Status,
     status_id: i64,
     pool: &sqlx::Pool<sqlx::Postgres>,
-    instance_collection: &HashMap<String, Mastodon>,
+    instance_collection: &HashMap<String, String>,
 ) -> Option<Vec<Status>> {
     let offset_date_time = time::OffsetDateTime::now_utc();
     let current_time =
@@ -301,7 +320,7 @@ async fn insert_status(
     status_id: i64,
     status: &Status,
     pool: &sqlx::Pool<sqlx::Postgres>,
-    instance_collection: &HashMap<String, Mastodon>,
+    instance_collection: &HashMap<String, String>,
 ) -> Option<Vec<Status>> {
     let offset_date_time = time::OffsetDateTime::now_utc();
     let current_time =
@@ -340,7 +359,7 @@ async fn insert_status(
 
 async fn get_status_descendants(
     status: &Status,
-    instance_collection: &HashMap<String, Mastodon>,
+    instance_collection: &HashMap<String, String>,
 ) -> Option<Vec<Status>> {
     debug!("Fetching context for status: {}", &status.uri);
     let original_id = StatusId::new(
@@ -388,25 +407,22 @@ async fn get_status_descendants(
 }
 
 async fn get_status_context(
-    instance_collection: &HashMap<String, Mastodon>,
+    instance_collection: &HashMap<String, String>,
     base_server: String,
     original_id: StatusId,
 ) -> Option<Context> {
     let original_id_string = &original_id.to_string();
-    let context = if instance_collection.contains_key(&base_server) {
-        let remote = instance_collection
-            .get(&base_server)
-            .expect("should be Mastodon instance");
-        let fetching = remote.get_context(&original_id).await;
-        if fetching.is_err() {
-            error!("Error fetching context");
-            return None;
-        }
-        fetching.expect("should be Context of Status")
-    } else {
-        let url_string =
-            format!("https://{base_server}/api/v1/statuses/{original_id_string}/context");
-        let response = reqwest::Client::new().get(&url_string).send().await;
+    let url_string = format!(
+        "https://{base_server}/api/v1/statuses/{original_id_string}/context"
+    );
+    let instance_token = instance_collection
+        .get(&base_server);
+    if let Some(instance_token) = instance_token {
+        let response = reqwest::Client::new()
+            .get(&url_string)
+            .bearer_auth(instance_token)
+            .send()
+            .await;
         if response.is_err() {
             error!(
                 "{} {}",
@@ -427,9 +443,30 @@ async fn get_status_context(
             json_window(&err, &json);
             return None;
         }
-        context.expect("should be Context of Status")
-    };
-    Some(context)
+        return Some(context.expect("should be Context of Status"));
+    }
+    let response = reqwest::Client::new().get(&url_string).send().await;
+    if response.is_err() {
+        error!(
+            "{} {}",
+            "Error HTTP:".red(),
+            response.expect_err("Context of Status")
+        );
+        return None;
+    }
+    let response = response.expect("should be Context of Status");
+    if !response.status().is_success() {
+        error!("{} {}", "Error HTTP:".red(), response.status());
+        return None;
+    }
+    let json = response.text().await.expect("should be Context of Status");
+    let context = serde_json::from_str::<Context>(&json);
+    if let Err(err) = context {
+        error!("{} {err}", "Error JSON:".red());
+        json_window(&err, &json);
+        return None;
+    }
+    Some(context.expect("should be Context of Status"))
 }
 
 fn json_window(err: &serde_json::Error, json: &String) {

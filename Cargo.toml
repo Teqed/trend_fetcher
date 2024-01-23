@@ -22,6 +22,7 @@ tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
 serde = "1.0.195"
 async-recursion = "1.0.5"
+color-eyre = "0.6.2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -30,3 +31,19 @@ git = "https://github.com/Teqed/mastodon-async.git"
 branch = "comb"
 version = "1.2.1"
 features = ["toml", "mt"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+enum_glob_use = "deny"
+pedantic = "deny"
+nursery = "deny"
+unwrap_used = "deny"
+
+[profile.release]
+opt-level = 'z'
+lto = true
+codegen-units = 1
+panic = 'abort'
+strip = "symbols"
