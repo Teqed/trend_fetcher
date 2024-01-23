@@ -152,7 +152,7 @@ impl Federation {
                     let now = chrono::Utc::now();
                     let duration = retry_after - now;
                     let duration = duration.to_std().expect("should be std::time::Duration");
-                    info!("Sleeping for {duration} seconds", duration = duration.as_secs());
+                    info!("Sleeping for {duration} seconds for {uri}", duration = duration.as_secs(), uri = uri);
                     tokio::time::sleep(duration).await;
                     return Self::find_status_id(uri, pool, home_instance_url, home_instance_token).await;
                 }
@@ -474,7 +474,7 @@ async fn get_status_context(
                 let now = chrono::Utc::now();
                 let duration = retry_after - now;
                 let duration = duration.to_std().expect("should be std::time::Duration");
-                info!("Sleeping for {duration} seconds", duration = duration.as_secs());
+                info!("Sleeping for {duration} seconds for {uri}", duration = duration.as_secs(), uri = &url_string);
                 tokio::time::sleep(duration).await;
                 return get_status_context(instance_collection, base_server, original_id).await;
             }
@@ -517,7 +517,7 @@ async fn get_status_context(
             let now = chrono::Utc::now();
             let duration = retry_after - now;
             let duration = duration.to_std().expect("should be std::time::Duration");
-            info!("Sleeping for {duration} seconds", duration = duration.as_secs());
+            info!("Sleeping for {duration} seconds for {uri}", duration = duration.as_secs(), uri = &url_string);
             tokio::time::sleep(duration).await;
             return get_status_context(instance_collection, base_server, original_id).await;
         }
