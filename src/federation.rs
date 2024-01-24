@@ -406,15 +406,28 @@ async fn get_status_descendants(
         return None;
     }
     debug!("Original ID: {original_id}");
-    // if status.in_reply_to_id.is_some() {
-    //     debug!("Status is a reply, skipping: {}", &status.uri);
-    //     return None;
-    // }
     let base_server = reqwest::Url::parse(status.uri.as_ref())
         .expect("should be Status URI")
         .host_str()
         .expect("should be base server string")
         .to_string();
+    if status.in_reply_to_id.is_some() {
+        debug!("Status is a reply, skipping: {}", &status.uri);
+        return None;
+        // let in_reply_to_id = status.in_reply_to_id.clone().expect("should be in_reply_to_id");
+        // let Some(context) = get_status_context(instance_collection, base_server, in_reply_to_id).await
+        // else {
+        //     warn!("Error fetching context");
+        //     return None;
+        // };
+        // debug!(
+        //     "Fetched context for status: {}, ancestors: {}, descendants: {}",
+        //     &status.uri,
+        //     context.ancestors.len(),
+        //     context.descendants.len()
+        // );
+        // return Some(context.descendants);
+    }
     let Some(context) = get_status_context(instance_collection, base_server, original_id).await
     else {
         warn!("Error fetching context");
@@ -426,9 +439,7 @@ async fn get_status_descendants(
         context.ancestors.len(),
         context.descendants.len()
     );
-    let mut combined_context = context.ancestors;
-    combined_context.extend(context.descendants);
-    Some(combined_context)
+    Some(context.descendants)
 }
 
 #[async_recursion]
