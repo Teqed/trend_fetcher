@@ -176,7 +176,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("{}", "Fetching trending statuses".green().to_string());
     let mut queued_statuses = HashMap::new();
     let mut fetched_servers = HashSet::new();
-    while !queued_servers.is_empty() {
+    // while !queued_servers.is_empty() {
         info!("Queued servers: {}", queued_servers.len());
         info!(
             "{}",
@@ -213,7 +213,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         for (_, value) in aux_trending_statuses_hashmap {
             Federation::modify_counts(&mut queued_statuses, value);
         }
-    }
+    // }
     info!("Total statuses: {}", queued_statuses.len());
 
     let pool = PgPool::connect(&format!(
