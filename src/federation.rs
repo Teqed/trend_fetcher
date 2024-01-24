@@ -312,9 +312,9 @@ impl Federation {
             let activity_pub_json = serde_json::to_string(&activity_pub_json).expect("should be activity pub json");
             // https://lgbtqia.space/users/PamCrossland/statuses/111811620785200326 for example
             #[rocket::get("/users/<user>/statuses/<status_id>")]
-            fn search(user: String, status_id: String, activity_pub_json: &State<String>) -> content::RawJson<String> {
+            fn search(user: String, status_id: String, activity_pub_json: &State<AppState>) -> content::RawJson<String> {
                 debug!("Searching for {status_id} on {user}", status_id = status_id, user = user);
-                content::RawJson(activity_pub_json.inner().to_string())
+                content::RawJson(activity_pub_json.0.clone())
             }
             // We'll want to run the endpoint on a different thread, so we'll use tokio::spawn
             let rocket = tokio::spawn(async move {
