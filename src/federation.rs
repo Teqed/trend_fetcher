@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use async_recursion::async_recursion;
 
+use mastodon_async::entities::error;
 use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
 
@@ -86,12 +87,11 @@ impl Federation {
                     response.expect_err("Trending statuses error"),
                     url.red()
                 );
-                warn!("Encountered on {}", url.red());
                 break;
             }
             let response = response.expect("should be trending statuses");
             if !response.status().is_success() {
-                error!("Error HTTP: {}", response.status());
+                error!("Error HTTP: {} on {}", response.status(), url.red());
                 break;
             }
             let json = response.text().await.expect("should be trending statuses");
@@ -101,7 +101,7 @@ impl Federation {
             if trending_statuses_raw.is_err() {
                 warn!("Parsing Issue on Trending JSON");
                 let error = trending_statuses_raw.expect_err("Trending statuses error");
-                error!("Error JSON: {}", error);
+                error!("Error JSON: {} on {}", error, url.red());
                 json_window(&error, &json);
                 break;
             }
@@ -162,7 +162,7 @@ impl Federation {
             let search_result = search_result.text().await.expect("should be search result");
             let search_result = serde_json::from_str::<SearchResult>(&search_result);
             if let Err(err) = search_result {
-                error!("{} {err}", "Error JSON:".red());
+                error!("Error JSON: {} on {}", err, search_url);
                 return Err(mastodon_async::Error::Other("Search for Status".to_string()));
             }
             let search_result: SearchResult = search_result.expect("should be search result");
@@ -365,13 +365,13 @@ async fn insert_status(
     );
     let insert_statement = insert_statement.execute(pool).await;
     if let Err(err) = insert_statement {
-        error!("Error inserting status: {err}");
+        error!("Error inserting status {} : {err}", &status.uri);
         return None;
     }
     if status.replies_count > 0 {
         let descendants = get_status_descendants(status, instance_collection).await;
         if descendants.is_none() {
-            warn!("Error fetching descendants");
+            debug!("No descendants fetched for status: {}", &status.uri);
             return None;
         }
         let descendants = descendants.expect("should be descendants");
