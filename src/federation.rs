@@ -310,9 +310,10 @@ impl Federation {
             // We'll host an API endpoint on localhost that serves a JSON created by convert_status_to_activitypub
             let activity_pub_json = convert_status_to_activitypub(&status);
             let activity_pub_json = serde_json::to_string(&activity_pub_json).expect("should be activity pub json");
-            #[rocket::get("/search?<q>&<resolve>")]
-            fn search(q: String, resolve: String, activity_pub_json: &State<String>) -> content::RawJson<String> {
-                debug!("Received search request: {q}, {resolve}");
+            // https://lgbtqia.space/users/PamCrossland/statuses/111811620785200326 for example
+            #[rocket::get("/users/<user>/statuses/<status_id>")]
+            fn search(user: String, status_id: String, activity_pub_json: &State<String>) -> content::RawJson<String> {
+                debug!("Searching for {status_id} on {user}", status_id = status_id, user = user);
                 content::RawJson(activity_pub_json.inner().to_string())
             }
             // We'll want to run the endpoint on a different thread, so we'll use tokio::spawn
@@ -327,8 +328,8 @@ impl Federation {
             // We'll wait a second to make sure the endpoint is up and running
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             // Now we'll search for the status on the home server
-            let search_url = format!("https://localhost:8000/api/v2/search?q={uri}&resolve=true");
-            // let search_url = format!("https://{home_instance_url}/api/v2/search?q={uri}&resolve=true");
+            let replacement_uri = format!("http://localhost:8000/users/{user}/statuses/{status_id}", user = status.account.acct, status_id = 0);
+            let search_url = format!("https://{home_instance_url}/api/v2/search?q={replacement_uri}&resolve=true");
             let search_result = ClientBuilder::new(reqwest::Client::new())
                 .with(RetryAfterMiddleware::new())
                 .build()
