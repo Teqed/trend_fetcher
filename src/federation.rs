@@ -3,6 +3,9 @@ use async_recursion::async_recursion;
 
 use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
+use reqwest::Url;
+use rocket::response::content;
+use time::OffsetDateTime;
 
 use crate::PAGE;
 use colored::Colorize;
@@ -12,6 +15,183 @@ use tracing::{debug, error, info, warn};
 use reqwest_middleware::ClientBuilder;
 use reqwest_retry_after::RetryAfterMiddleware;
 
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use rocket::{self, State};
+
+#[derive(Debug, Deserialize)]
+struct Account {
+    id: String,
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MediaAttachment {
+    id: String,
+    url: String,
+    remote_url: Option<String>,
+    preview_url: String,
+    meta: Option<AttachmentMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentMeta {
+    original: Option<MediaMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MediaMeta {
+    width: Option<i32>,
+    height: Option<i32>,
+    frame_rate: Option<String>,
+    duration: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Tag {
+    name: String,
+    url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ActivityPubNote {
+    #[serde(rename = "@context")]
+    context: Vec<Value>,
+    id: Url,
+    #[serde(rename = "type")]
+    type_: String,
+    summary: Option<Value>,
+    in_reply_to: Option<Value>,
+    published: OffsetDateTime,
+    url: Url,
+    attributed_to: Url,
+    to: Vec<String>,
+    cc: Vec<String>,
+    sensitive: bool,
+    atom_uri: Url,
+    in_reply_to_atom_uri: Option<Url>,
+    conversation: String,
+    content: String,
+    content_map: serde_json::Map<String, Value>,
+    attachment: Vec<APAttachment>,
+    tag: Vec<APTag>,
+    replies: APReplies,
+}
+
+#[derive(Debug, Serialize)]
+struct APAttachment {
+    #[serde(rename = "type")]
+    type_: String,
+    media_type: String,
+    url: String,
+    name: Option<Value>,
+    blurhash: String,
+    width: Option<i64>,
+    height: Option<i64>,
+}
+
+#[derive(Debug, Serialize)]
+struct APTag {
+    #[serde(rename = "type")]
+    type_: String,
+    href: String,
+    name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct APReplies {
+    id: String,
+    #[serde(rename = "type")]
+    type_: String,
+    first: APFirst,
+}
+
+#[derive(Debug, Serialize)]
+struct APFirst {
+    #[serde(rename = "type")]
+    type_: String,
+    next: String,
+    part_of: String,
+    items: Vec<Value>,
+}
+
+
+fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
+    let media_attachments: Vec<APAttachment> = status.media_attachments.iter().map(|media| {
+        let meta = media.meta.as_ref().and_then(|m| m.original.as_ref());
+        APAttachment {
+            type_: "Document".to_string(),
+            media_type: "video/mp4".to_string(), // Assuming that all media attachments are videos
+            url: media.remote_url.clone().unwrap_or(media.url.clone().expect("should be url")).to_string(),
+            name: None,
+            blurhash: media.preview_url.clone().expect("should be preview_url").to_string(),
+            width: meta.and_then(|m| m.width),
+            height: meta.and_then(|m| m.height),
+        }
+    }).collect();
+
+    let context = vec![
+        Value::String("https://www.w3.org/ns/activitystreams".to_string()),
+        serde_json::json!({
+            "ostatus": "http://ostatus.org#",
+            "atomUri": "ostatus:atomUri",
+            "inReplyToAtomUri": "ostatus:inReplyToAtomUri",
+            "conversation": "ostatus:conversation",
+            "sensitive": "as:sensitive",
+            "toot": "http://joinmastodon.org/ns#",
+            "votersCount": "toot:votersCount",
+            "blurhash": "toot:blurhash",
+            "focalPoint": {
+                "@container": "@list",
+                "@id": "toot:focalPoint"
+            },
+            "Hashtag": "as:Hashtag"
+        }),
+    ];
+
+    let language_code = &status.language;
+    let content_map = serde_json::Map::from_iter(vec![(language_code.clone().expect("should be language code"), Value::String(status.content.clone()))]);
+
+    ActivityPubNote {
+        context,
+        id: status.url.clone().expect("should be url"),
+        type_: "Note".to_string(),
+        summary: None,
+        in_reply_to: None,
+        published: status.created_at,
+        url: status.url.clone().expect("should be url"),
+        attributed_to: status.account.url.clone(),
+        to: vec!["https://www.w3.org/ns/activitystreams#Public".to_string()],
+        cc: vec![format!("{}/followers", status.account.url)],
+        sensitive: status.sensitive,
+        atom_uri: status.uri.clone(),
+        in_reply_to_atom_uri: None,
+        conversation: format!("tag:mastodon.social,{}:objectId={}:objectType=Conversation", status.created_at, status.account.id),
+        content: status.content.clone(),
+        content_map,
+        attachment: media_attachments,
+        tag: status.tags.iter().map(|tag| APTag {
+            type_: "Hashtag".to_string(),
+            href: tag.url.clone(),
+            name: format!("#{}", tag.name),
+        }).collect(),
+        replies: APReplies {
+            id: format!("{}/replies", status.url.clone().expect("should be url")),
+            type_: "Collection".to_string(),
+            first: APFirst {
+                type_: "CollectionPage".to_string(),
+                next: format!("{}/replies?only_other_accounts=true&page=true", status.url.clone().expect("should be url")),
+                part_of: format!("{}/replies", status.url.clone().expect("should be url")),
+                items: Vec::new(),
+            },
+        },
+    }
+}
+
+struct AppState {
+    activity_pub_json: String,
+}
 /// Struct for interacting with Fediverse APIs.
 pub struct Federation;
 
@@ -118,7 +298,8 @@ impl Federation {
 
     /// Find the status ID for a given URI from the home instance's database.
     #[async_recursion]
-    pub async fn find_status_id(uri: &str, pool: &PgPool, home_instance_url: &String, home_instance_token: &String) -> Result<i64> {
+    pub async fn find_status_id(status: &Status, pool: &PgPool, home_instance_url: &String, home_instance_token: &String) -> Result<i64> {
+        let uri = status.uri.to_string();
         let select_statement = sqlx::query!(r#"SELECT id FROM statuses WHERE uri = $1"#, uri)
             .fetch_one(pool)
             .await;
@@ -127,16 +308,42 @@ impl Federation {
             Ok(status.id)
         } else {
             debug!("Status not found in database, searching for it: {uri}");
-            let search_url = format!("https://{home_instance_url}/api/v2/search?q={uri}&resolve=true");
+            // Instead of searching for it on the home server, let's host it ourselves and have the Mastodon instance search for it on us.
+            // We'll host an API endpoint on localhost that serves a JSON created by convert_status_to_activitypub
+            let activity_pub_json = convert_status_to_activitypub(&status);
+            let activity_pub_json = serde_json::to_string(&activity_pub_json).expect("should be activity pub json");
+            #[rocket::get("/search?<q>&<resolve>")]
+            fn search(q: String, resolve: String, activity_pub_json: &State<String>) -> content::RawJson<String> {
+                debug!("Received search request: {q}, {resolve}");
+                content::RawJson(activity_pub_json.inner().to_string())
+            }
+            // We'll want to run the endpoint on a different thread, so we'll use tokio::spawn
+            let rocket = tokio::spawn(async move {
+                rocket::build()
+                    .manage(AppState {
+                        activity_pub_json: activity_pub_json.clone(),
+                    })
+                    .mount("/", rocket::routes![search])
+                    .launch()
+                    .await
+                    .expect("should be rocket");
+            });
+            // We'll wait a second to make sure the endpoint is up and running
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            // Now we'll search for the status on the home server
+            let search_url = format!("https://localhost:8000/api/v2/search?q={uri}&resolve=true");
+            // let search_url = format!("https://{home_instance_url}/api/v2/search?q={uri}&resolve=true");
             let search_result = ClientBuilder::new(reqwest::Client::new())
                 .with(RetryAfterMiddleware::new())
                 .build()
                 .get(&search_url).bearer_auth(home_instance_token).send().await;
             if search_result.is_err() {
+                drop(rocket);
                 let received_error = search_result.expect_err("should be error");
                 error!("Error result: {}", received_error);
                 return Err(mastodon_async::Error::Other("Search for Status".to_string()));
             }
+            drop(rocket);
             let search_result = search_result.expect("should be search result");
             if !search_result.status().is_success() {
                 if (search_result.status().as_u16() == 429) || (search_result.status().to_string().contains("429")) {
@@ -153,7 +360,7 @@ impl Federation {
                     let duration = duration.to_std().expect("should be std::time::Duration");
                     info!("Sleeping for {duration} seconds for {uri}", duration = duration.as_secs(), uri = uri);
                     tokio::time::sleep(duration).await;
-                    return Self::find_status_id(uri, pool, home_instance_url, home_instance_token).await;
+                    return Self::find_status_id(status, pool, home_instance_url, home_instance_token).await;
                 }
                 error!("Error HTTP: {}", search_result.status());
                 return Err(mastodon_async::Error::Other("Search for Status".to_string()));
@@ -215,7 +422,7 @@ impl Federation {
     ) -> Result<Option<HashMap<String, Status>>> {
         debug!("Status: {}", &status.uri);
         let mut additional_context_statuses = HashMap::new();
-        let status_id = Self::find_status_id(status.uri.as_ref(), pool, home_server_url, home_server_token).await;
+        let status_id = Self::find_status_id(status, pool, home_server_url, home_server_token).await;
         if status_id.is_err() {
             warn!("Status not found by home server, skipping: {}", &status.uri);
             warn!("Error: {}", status_id.expect_err("should be error"));
