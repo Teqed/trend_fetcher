@@ -189,9 +189,7 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
     }
 }
 
-struct AppState {
-    activity_pub_json: String,
-}
+struct AppState(String);
 /// Struct for interacting with Fediverse APIs.
 pub struct Federation;
 
@@ -320,9 +318,7 @@ impl Federation {
             // We'll want to run the endpoint on a different thread, so we'll use tokio::spawn
             let rocket = tokio::spawn(async move {
                 rocket::build()
-                    .manage(AppState {
-                        activity_pub_json: activity_pub_json.clone(),
-                    })
+                    .manage(AppState(activity_pub_json))
                     .mount("/", rocket::routes![search])
                     .launch()
                     .await
