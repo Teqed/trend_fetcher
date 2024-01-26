@@ -77,6 +77,7 @@ use federation::Federation;
 use futures::stream::{self, StreamExt};
 use serde::Deserialize;
 use sqlx::postgres::PgPool;
+use tokio::task;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
@@ -233,16 +234,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     while !queued_statuses.is_empty() {
         info!("Queued statuses: {}", queued_statuses.len());
         let cloned_queued_statuses = queued_statuses.clone();
-        let rocket_thread = tokio::spawn(async move {
-            Federation::start_rocket(cloned_queued_statuses).await
-        });
         info!("Starting Rocket");
+        task::spawn(async move {
+            Federation::start_rocket(cloned_queued_statuses).await;
+        });
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-        if let Err(e) = rocket_thread.await {
-            error!("{}", "Error starting Rocket".red());
-            error!("{}", format!("{}", e.to_string().red()));
-            return Err(e.into());
-        }
         info!("Rocket started");
         let some_context = stream::iter(queued_statuses.clone().into_iter())
             .map(|(_, status)| {
@@ -266,13 +262,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .post("https://trendfetcher.shatteredsky.net/shutdown")
             .send()
             .await;
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        if let Err(e) = request_shutdown {
-            error!("{}", "Error shutting down Rocket".red());
-            error!("{}", format!("{}", e.to_string().red()));
-            return Err(e.into());
-        }
-        info!("Rocket shut down");
 
         for (_, status) in queued_statuses.clone() {
             Federation::modify_counts(&mut fetched_statuses, status);
@@ -290,6 +279,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Federation::modify_counts(&mut queued_statuses, status);
             }
         }
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        if let Err(e) = request_shutdown {
+            error!("{}", "Error shutting down Rocket".red());
+            error!("{}", format!("{}", e.to_string().red()));
+            return Err(e.into());
+        }
+        info!("Rocket shut down");
     }
     info!("{}", "All OK!".green());
     info!(

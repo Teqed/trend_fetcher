@@ -67,6 +67,7 @@ struct ActivityPubNote {
     // published: OffsetDateTime,
     published: String,
     url: Url,
+    uri: Url,
     #[serde(rename = "attributedTo")]
     attributed_to: Option<String>,
     to: Vec<String>,
@@ -146,7 +147,7 @@ impl<'r> Responder<'r, 'static> for ActivityJsonResponder {
 
 use rocket::Shutdown;
 
-#[rocket::get("/shutdown")]
+#[rocket::post("/shutdown")]
 fn shutdown(shutdown: Shutdown) -> &'static str {
     shutdown.notify();
     "Shutting down..."
@@ -156,13 +157,9 @@ fn search(user: &str, status_id: &str, route_json: &rocket::State<AppState>) -> 
     println!("Got request for user {} and status {}", user, status_id);
     // let status = route_json.0.iter().find(|status| status.id.path() == format!("/@{}/{}", user, status_id)).expect("should be status");
     let status = route_json.0.iter().find(|status| status.id.path() == format!("/users/{}/statuses/{}", user, status_id)).expect("should be status");
-    for status in &route_json.0 {
-        println!("Found status: {}", status.id.path());
-    }
     let status = serde_json::to_value(status).expect("should be valid json");
     let status: ActivityPubNote = serde_json::from_value(status).expect("should be valid status");
     println!("Found status: {}", status.id.path());
-    println!("Responding with JSON: {}", serde_json::to_string_pretty(&status).expect("should be valid json"));
     ActivityJsonResponder {
         inner: Json(status),
     }
@@ -232,7 +229,7 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
     ];
 
     let language_code = &status.language;
-    let content_map = serde_json::Map::from_iter(vec![(language_code.clone().expect("should be language code"), Value::String("Test String".to_string()))]);
+    let content_map = serde_json::Map::from_iter(vec![(language_code.clone().unwrap_or(String::new()), serde_json::Value::String(status.content.clone()))]);
 
     ActivityPubNote {
         context,
@@ -242,14 +239,15 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
         in_reply_to: None,
         published: status.created_at.to_string(),
         url: status.url.clone().expect("should be url"),
-        attributed_to: Some(status.account.uri.clone().to_string()),
+        uri: status.uri.clone(),
+        attributed_to: Some(status.account.uri.clone().unwrap_or(status.account.url.clone()).to_string()),
         to: vec!["https://www.w3.org/ns/activitystreams#Public".to_string()],
-        cc: vec![format!("{}/followers", status.account.uri)],
+        cc: vec![format!("{}/followers", status.account.uri.clone().unwrap_or(status.account.url.clone()))],
         sensitive: status.sensitive,
         atom_uri: Some(status.uri.clone()),
         in_reply_to_atom_uri: None,
         conversation: String::new(),
-        content: "Test String".to_string(),
+        content: status.content.clone(),
         content_map,
         attachment: media_attachments,
         tag: status.tags.iter().map(|tag| APTag {
@@ -377,17 +375,22 @@ impl Federation {
     /// Find the status ID for a given URI from the home instance's database.
     #[async_recursion]
     pub async fn find_status_id(status: &Status, pool: &PgPool, home_instance_url: &String, home_instance_token: &String) -> Result<i64> {
+        debug!("Finding status ID for {uri}", uri = status.uri);
         let uri = status.uri.to_string();
         let select_statement = sqlx::query!(r#"SELECT id FROM statuses WHERE uri = $1"#, uri)
             .fetch_one(pool)
             .await;
 
         if let Ok(status_record) = select_statement {
+            debug!("Status found in database: {uri}", uri = uri);
             Ok(status_record.id)
         } else {
             debug!("Status not found in database, searching for it: {uri}");
-            let replacement_uri = format!("https://trendfetcher.shatteredsky.net/users/{user}/statuses/{status_id}", user = status.account.acct, status_id = 0);
+            let status_id_from_uri = status.uri.as_ref().split('/').last().expect("should be Status ID").to_string();
+            let user_name_without_domain = status.account.acct.split('@').next().expect("should be user name");
+            let replacement_uri = format!("https://trendfetcher.shatteredsky.net/users/{user}/statuses/{status_id}", user = user_name_without_domain, status_id = status_id_from_uri);
             let search_url = format!("https://{home_instance_url}/api/v2/search?q={replacement_uri}&resolve=true");
+            debug!("Searching for status: {uri}", uri = uri);
             let search_result = ClientBuilder::new(reqwest::Client::new())
                 .with(RetryAfterMiddleware::new())
                 .build()
@@ -418,14 +421,16 @@ impl Federation {
                 error!("Error HTTP: {}", search_result.status());
                 return Err(mastodon_async::Error::Other("Search for Status".to_string()));
             }
+            debug!("Search success for status: {uri}", uri = uri);
             let search_result = search_result.text().await.expect("should be search result");
-            let search_result = serde_json::from_str::<SearchResult>(&search_result);
-            if let Err(err) = search_result {
+            let search_result_result = serde_json::from_str::<SearchResult>(&search_result);
+            if let Err(err) = search_result_result {
                 error!("Error JSON: {} on {}", err, search_url);
+                json_window(&err, &search_result);
                 return Err(mastodon_async::Error::Other("Search for Status".to_string()));
             }
-            let search_result: SearchResult = search_result.expect("should be search result");
-            if search_result.statuses.is_empty() {
+            let search_result_result_result: SearchResult = search_result_result.expect("should be search result");
+            if search_result_result_result.statuses.is_empty() {
                 let message: String = format!("Status not found by home server: {uri}");
                 return Err(mastodon_async::Error::Other(message));
             }
@@ -535,14 +540,14 @@ impl Federation {
         Ok(Some(additional_context_statuses))
     }
 
-    pub async fn start_rocket(statuses: HashMap<String, Status>) -> std::result::Result<rocket::Rocket<rocket::Ignite>, rocket::Error> {
-    let statuses = statuses.iter().map(|(_, status)| convert_status_to_activitypub(status)).collect::<Vec<_>>();
+    pub async fn start_rocket(statuses: HashMap<String, Status>) {
+        let statuses = statuses.iter().map(|(_, status)| convert_status_to_activitypub(status)).collect::<Vec<_>>();
         let state = AppState(statuses);
         rocket::build()
             .mount("/", rocket::routes![search, shutdown])
             .manage(state)
             .launch()
-            .await
+            .await;
     }
 }
 
