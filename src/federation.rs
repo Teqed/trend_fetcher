@@ -154,12 +154,9 @@ fn shutdown(shutdown: Shutdown) -> &'static str {
 }
 #[rocket::get("/users/<user>/statuses/<status_id>")]
 fn search(user: &str, status_id: &str, route_json: &rocket::State<AppState>) -> ActivityJsonResponder {
-    println!("Got request for user {} and status {}", user, status_id);
-    // let status = route_json.0.iter().find(|status| status.id.path() == format!("/@{}/{}", user, status_id)).expect("should be status");
     let status = route_json.0.iter().find(|status| status.id.path() == format!("/users/{}/statuses/{}", user, status_id)).expect("should be status");
     let status = serde_json::to_value(status).expect("should be valid json");
     let status: ActivityPubNote = serde_json::from_value(status).expect("should be valid status");
-    println!("Found status: {}", status.id.path());
     ActivityJsonResponder {
         inner: Json(status),
     }
