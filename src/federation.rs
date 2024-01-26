@@ -539,7 +539,7 @@ impl Federation {
     let statuses = statuses.iter().map(|(_, status)| convert_status_to_activitypub(status)).collect::<Vec<_>>();
         let state = AppState(statuses);
         rocket::build()
-            .mount("/", rocket::routes![search])
+            .mount("/", rocket::routes![search, shutdown])
             .manage(state)
             .launch()
             .await
