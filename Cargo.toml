@@ -27,6 +27,7 @@ reqwest-retry-after = "0.1.2"
 reqwest-middleware = "0.2.4"
 chrono = "0.4.32"
 rocket = { version = "0.5.0", features = ["json"] }
+http = "1.0.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -51,3 +52,11 @@ lto = true
 codegen-units = 1
 panic = 'abort'
 strip = "symbols"
+
+[[bin]]
+name = "trend_fetcher"
+path = "src/main.rs"
+
+[[bin]]
+name = "trend_fetcher_rocket"
+path = "src/rocket.rs"

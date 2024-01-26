@@ -54,7 +54,7 @@ struct Tag {
     url: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ActivityPubNote {
     #[serde(rename = "@context")]
     context: Vec<Value>,
@@ -62,36 +62,45 @@ struct ActivityPubNote {
     #[serde(rename = "type")]
     type_: String,
     summary: Option<Value>,
+    #[serde(rename = "inReplyTo")]
     in_reply_to: Option<Value>,
-    published: OffsetDateTime,
+    // published: OffsetDateTime,
+    published: String,
     url: Url,
-    attributed_to: Url,
+    #[serde(rename = "attributedTo")]
+    attributed_to: Option<String>,
     to: Vec<String>,
     cc: Vec<String>,
     sensitive: bool,
-    atom_uri: Url,
+    #[serde(rename = "atomUri")]
+    atom_uri: Option<Url>,
+    #[serde(rename = "inReplyToAtomUri")]
     in_reply_to_atom_uri: Option<Url>,
     conversation: String,
     content: String,
+    #[serde(rename = "contentMap")]
     content_map: serde_json::Map<String, Value>,
     attachment: Vec<APAttachment>,
     tag: Vec<APTag>,
     replies: APReplies,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct APAttachment {
     #[serde(rename = "type")]
     type_: String,
+    #[serde(rename = "mediaType")]
     media_type: String,
     url: String,
     name: Option<Value>,
     blurhash: String,
+    #[serde(rename = "focalPoint")]
+    focal_point: Vec<i64>,
     width: Option<i64>,
     height: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct APTag {
     #[serde(rename = "type")]
     type_: String,
@@ -99,7 +108,7 @@ struct APTag {
     name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct APReplies {
     id: String,
     #[serde(rename = "type")]
@@ -107,25 +116,97 @@ struct APReplies {
     first: APFirst,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct APFirst {
     #[serde(rename = "type")]
     type_: String,
     next: String,
-    part_of: String,
+    #[serde(rename = "partOf")]
+    part_of: Option<String>,
     items: Vec<Value>,
 }
+struct AppState(Vec<ActivityPubNote>);
 
+use rocket::request::Request;
+use rocket::response::{self, Response, Responder};
+use rocket::serde::json::Json;
+
+
+struct ActivityJsonResponder {
+    inner: Json<ActivityPubNote>,
+}
+
+impl<'r> Responder<'r, 'static> for ActivityJsonResponder {
+    fn respond_to(self, req: &'r Request<'_>) -> response::Result<'static> {
+        Response::build_from(self.inner.respond_to(req)?)
+            .raw_header("Content-Type", "application/activity+json")
+            .ok()
+    }
+}
+
+use rocket::Shutdown;
+
+#[rocket::get("/shutdown")]
+fn shutdown(shutdown: Shutdown) -> &'static str {
+    shutdown.notify();
+    "Shutting down..."
+}
+#[rocket::get("/users/<user>/statuses/<status_id>")]
+fn search(user: &str, status_id: &str, route_json: &rocket::State<AppState>) -> ActivityJsonResponder {
+    println!("Got request for user {} and status {}", user, status_id);
+    // let status = route_json.0.iter().find(|status| status.id.path() == format!("/@{}/{}", user, status_id)).expect("should be status");
+    let status = route_json.0.iter().find(|status| status.id.path() == format!("/users/{}/statuses/{}", user, status_id)).expect("should be status");
+    for status in &route_json.0 {
+        println!("Found status: {}", status.id.path());
+    }
+    let status = serde_json::to_value(status).expect("should be valid json");
+    let status: ActivityPubNote = serde_json::from_value(status).expect("should be valid status");
+    println!("Found status: {}", status.id.path());
+    println!("Responding with JSON: {}", serde_json::to_string_pretty(&status).expect("should be valid json"));
+    ActivityJsonResponder {
+        inner: Json(status),
+    }
+}
 
 fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
     let media_attachments: Vec<APAttachment> = status.media_attachments.iter().map(|media| {
         let meta = media.meta.as_ref().and_then(|m| m.original.as_ref());
+        let media_clone = media.url.clone().expect("should be url").to_string();
+        let extension = media_clone.split('.').last().expect("should be extension");
+        let type_from_media = match media.media_type {
+            MediaType::Image => {
+                match extension {
+                    "png" => "image/png".to_string(),
+                    "jpg" | "jpeg" => "image/jpeg".to_string(),
+                    "gif" => "image/gif".to_string(),
+                    _ => "image".to_string(),
+                }
+            }
+            MediaType::Video | MediaType::Gifv => {
+                match extension {
+                    "mp4" => "video/mp4".to_string(),
+                    "webm" => "video/webm".to_string(),
+                    _ => "video".to_string(),
+                }
+            }
+            MediaType::Audio => {
+                let media_clone = media.url.clone().expect("should be url").to_string();
+                let extension = media_clone.split('.').last().expect("should be extension");
+                match extension {
+                    "mp3" => "audio/mp3".to_string(),
+                    "ogg" => "audio/ogg".to_string(),
+                    _ => "audio".to_string(),
+                }
+            }
+            MediaType::Unknown => "unknown".to_string(),
+        };
         APAttachment {
             type_: "Document".to_string(),
-            media_type: "video/mp4".to_string(), // Assuming that all media attachments are videos
+            media_type: type_from_media,
             url: media.remote_url.clone().unwrap_or(media.url.clone().expect("should be url")).to_string(),
-            name: None,
-            blurhash: media.preview_url.clone().expect("should be preview_url").to_string(),
+            name: media.description.clone().map(Value::String),
+            blurhash: media.blurhash.clone().unwrap_or_default(),
+            focal_point: vec![0, 0],
             width: meta.and_then(|m| m.width),
             height: meta.and_then(|m| m.height),
         }
@@ -151,24 +232,24 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
     ];
 
     let language_code = &status.language;
-    let content_map = serde_json::Map::from_iter(vec![(language_code.clone().expect("should be language code"), Value::String(status.content.clone()))]);
+    let content_map = serde_json::Map::from_iter(vec![(language_code.clone().expect("should be language code"), Value::String("Test String".to_string()))]);
 
     ActivityPubNote {
         context,
-        id: status.url.clone().expect("should be url"),
+        id: status.uri.clone(),
         type_: "Note".to_string(),
         summary: None,
         in_reply_to: None,
-        published: status.created_at,
+        published: status.created_at.to_string(),
         url: status.url.clone().expect("should be url"),
-        attributed_to: status.account.url.clone(),
+        attributed_to: Some(status.account.uri.clone().to_string()),
         to: vec!["https://www.w3.org/ns/activitystreams#Public".to_string()],
-        cc: vec![format!("{}/followers", status.account.url)],
+        cc: vec![format!("{}/followers", status.account.uri)],
         sensitive: status.sensitive,
-        atom_uri: status.uri.clone(),
+        atom_uri: Some(status.uri.clone()),
         in_reply_to_atom_uri: None,
-        conversation: format!("tag:mastodon.social,{}:objectId={}:objectType=Conversation", status.created_at, status.account.id),
-        content: status.content.clone(),
+        conversation: String::new(),
+        content: "Test String".to_string(),
         content_map,
         attachment: media_attachments,
         tag: status.tags.iter().map(|tag| APTag {
@@ -177,19 +258,18 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
             name: format!("#{}", tag.name),
         }).collect(),
         replies: APReplies {
-            id: format!("{}/replies", status.url.clone().expect("should be url")),
+            id: format!("{}/replies", status.uri.clone()),
             type_: "Collection".to_string(),
             first: APFirst {
                 type_: "CollectionPage".to_string(),
-                next: format!("{}/replies?only_other_accounts=true&page=true", status.url.clone().expect("should be url")),
-                part_of: format!("{}/replies", status.url.clone().expect("should be url")),
+                next: format!("{}/replies?only_other_accounts=true&page=true", status.uri.clone()),
+                part_of: Some(format!("{}/replies", status.uri.clone())),
                 items: Vec::new(),
             },
         },
     }
 }
 
-struct AppState(String);
 /// Struct for interacting with Fediverse APIs.
 pub struct Federation;
 
@@ -302,45 +382,21 @@ impl Federation {
             .fetch_one(pool)
             .await;
 
-        if let Ok(status) = select_statement {
-            Ok(status.id)
+        if let Ok(status_record) = select_statement {
+            Ok(status_record.id)
         } else {
             debug!("Status not found in database, searching for it: {uri}");
-            // Instead of searching for it on the home server, let's host it ourselves and have the Mastodon instance search for it on us.
-            // We'll host an API endpoint on localhost that serves a JSON created by convert_status_to_activitypub
-            let activity_pub_json = convert_status_to_activitypub(&status);
-            let activity_pub_json = serde_json::to_string(&activity_pub_json).expect("should be activity pub json");
-            // https://lgbtqia.space/users/PamCrossland/statuses/111811620785200326 for example
-            #[rocket::get("/users/<user>/statuses/<status_id>")]
-            fn search(user: String, status_id: String, activity_pub_json: &State<AppState>) -> content::RawJson<String> {
-                debug!("Searching for {status_id} on {user}", status_id = status_id, user = user);
-                content::RawJson(activity_pub_json.0.clone())
-            }
-            // We'll want to run the endpoint on a different thread, so we'll use tokio::spawn
-            let rocket = tokio::spawn(async move {
-                rocket::build()
-                    .manage(AppState(activity_pub_json))
-                    .mount("/", rocket::routes![search])
-                    .launch()
-                    .await
-                    .expect("should be rocket");
-            });
-            // We'll wait a second to make sure the endpoint is up and running
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            // Now we'll search for the status on the home server
-            let replacement_uri = format!("http://localhost:8000/users/{user}/statuses/{status_id}", user = status.account.acct, status_id = 0);
+            let replacement_uri = format!("https://trendfetcher.shatteredsky.net/users/{user}/statuses/{status_id}", user = status.account.acct, status_id = 0);
             let search_url = format!("https://{home_instance_url}/api/v2/search?q={replacement_uri}&resolve=true");
             let search_result = ClientBuilder::new(reqwest::Client::new())
                 .with(RetryAfterMiddleware::new())
                 .build()
                 .get(&search_url).bearer_auth(home_instance_token).send().await;
             if search_result.is_err() {
-                drop(rocket);
                 let received_error = search_result.expect_err("should be error");
                 error!("Error result: {}", received_error);
                 return Err(mastodon_async::Error::Other("Search for Status".to_string()));
             }
-            drop(rocket);
             let search_result = search_result.expect("should be search result");
             if !search_result.status().is_success() {
                 if (search_result.status().as_u16() == 429) || (search_result.status().to_string().contains("429")) {
@@ -477,6 +533,16 @@ impl Federation {
         }
         debug!("{}", format!("Fetched {} OK!", &status.uri).green());
         Ok(Some(additional_context_statuses))
+    }
+
+    pub async fn start_rocket(statuses: HashMap<String, Status>) -> std::result::Result<rocket::Rocket<rocket::Ignite>, rocket::Error> {
+    let statuses = statuses.iter().map(|(_, status)| convert_status_to_activitypub(status)).collect::<Vec<_>>();
+        let state = AppState(statuses);
+        rocket::build()
+            .mount("/", rocket::routes![search])
+            .manage(state)
+            .launch()
+            .await
     }
 }
 

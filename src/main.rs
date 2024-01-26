@@ -232,6 +232,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Concurrent block
     while !queued_statuses.is_empty() {
         info!("Queued statuses: {}", queued_statuses.len());
+        let cloned_queued_statuses = queued_statuses.clone();
+        let rocket_thread = tokio::spawn(async move {
+            Federation::start_rocket(cloned_queued_statuses).await
+        });
+        info!("Starting Rocket");
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        if let Err(e) = rocket_thread.await {
+            error!("{}", "Error starting Rocket".red());
+            error!("{}", format!("{}", e.to_string().red()));
+            return Err(e.into());
+        }
+        info!("Rocket started");
         let some_context = stream::iter(queued_statuses.clone().into_iter())
             .map(|(_, status)| {
                 let home_server_url = config.servers.home.clone();
@@ -249,6 +261,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .into_iter()
             .collect::<Result<Vec<_>, _>>()
             .expect("Error fetching context statuses from queued statuses");
+        info!("Shutting down Rocket");
+        let request_shutdown = reqwest::Client::new()
+            .post("https://trendfetcher.shatteredsky.net/shutdown")
+            .send()
+            .await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        if let Err(e) = request_shutdown {
+            error!("{}", "Error shutting down Rocket".red());
+            error!("{}", format!("{}", e.to_string().red()));
+            return Err(e.into());
+        }
+        info!("Rocket shut down");
+
         for (_, status) in queued_statuses.clone() {
             Federation::modify_counts(&mut fetched_statuses, status);
         }
