@@ -117,13 +117,13 @@ fn shutdown(shutdown: Shutdown) -> &'static str {
     "Shutting down..."
 }
 #[rocket::get("/users/<user>/statuses/<status_id>")]
-fn search(user: &str, status_id: &str, route_json: &State<AppState>) -> ActivityJsonResponder {
-    let status = route_json.0.iter().find(|status| status.id.path() == format!("/users/{user}/statuses/{status_id}")).expect("should be status");
+fn search(user: &str, status_id: &str, route_json: &State<AppState>) -> Option<ActivityJsonResponder> {
+    let status = route_json.0.iter().find(|status| status.id.path() == format!("/users/{user}/statuses/{status_id}"))?;
     let status = serde_json::to_value(status).expect("should be valid json");
     let status: ActivityPubNote = serde_json::from_value(status).expect("should be valid status");
-    ActivityJsonResponder {
+    Some(ActivityJsonResponder {
         inner: Json(status),
-    }
+    })
 }
 
 fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
