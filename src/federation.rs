@@ -452,8 +452,7 @@ impl Federation {
         let mut additional_context_statuses = HashMap::new();
         let status_id = Self::find_status_id(status, pool, home_server_url, home_server_token).await;
         if status_id.is_err() {
-            warn!("Status not found by home server, skipping: {}", &status.uri);
-            warn!("Error: {}", status_id.expect_err("should be error"));
+            warn!("Status not found by home server, skipping: {} , Error: {}", &status.uri, status_id.expect_err("should be error"));
             return Ok(None);
         }
         let status_id = status_id.expect("should be status ID");
