@@ -574,7 +574,7 @@ async fn update_status(
     if status.replies_count > replies_count {
         let descendants = get_status_descendants(status, instance_collection).await;
         if descendants.is_none() {
-            warn!("Error fetching descendants");
+            debug!("Error fetching descendants");
             return None;
         }
         let descendants = descendants.expect("should be descendants");
