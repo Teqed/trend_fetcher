@@ -440,6 +440,15 @@ impl Federation {
         instance_collection: &HashMap<String, String>,
     ) -> Result<Option<HashMap<String, Status>>> {
         debug!("Status: {}", &status.uri);
+        let original_id_string = &status
+            .uri.as_ref().split('/')
+            .last()
+            .expect("should be Status ID")
+            .to_string();
+        if !original_id_string.chars().all(char::is_numeric) {
+            warn!("ID is not numeric, skipping: {}", &status.uri);
+            return Ok(None);
+        }
         let mut additional_context_statuses = HashMap::new();
         let status_id = Self::find_status_id(status, pool, home_server_url, home_server_token).await;
         if status_id.is_err() {
