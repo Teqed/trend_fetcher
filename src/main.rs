@@ -177,7 +177,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("{}", "Fetching trending statuses".green().to_string());
     let mut queued_statuses = HashMap::new();
     let mut fetched_servers = HashSet::new();
-    // while !queued_servers.is_empty() {
+    while !queued_servers.is_empty() {
         info!("Queued servers: {}", queued_servers.len());
         info!(
             "{}",
@@ -214,7 +214,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         for (_, value) in aux_trending_statuses_hashmap {
             Federation::modify_counts(&mut queued_statuses, value);
         }
-    // }
+    }
     info!("Total statuses: {}", queued_statuses.len());
 
     let pool = PgPool::connect(&format!(
@@ -230,7 +230,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("{}", "Inserting or updating statuses".green());
     let mut fetched_statuses = HashMap::new();
     let length_of_initial_statuses = queued_statuses.len();
-    // Concurrent block
     while !queued_statuses.is_empty() {
         info!("Queued statuses: {}", queued_statuses.len());
         let cloned_queued_statuses = queued_statuses.clone();
@@ -238,7 +237,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         task::spawn(async move {
             Federation::start_rocket(cloned_queued_statuses).await;
         });
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         info!("Rocket started");
         let some_context = stream::iter(queued_statuses.clone().into_iter())
             .map(|(_, status)| {
@@ -258,7 +257,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .collect::<Result<Vec<_>, _>>()
             .expect("Error fetching context statuses from queued statuses");
         info!("Shutting down Rocket");
-        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
         let request_shutdown = reqwest::Client::new()
             .post("https://trendfetcher.shatteredsky.net/shutdown")
             .send()
@@ -280,13 +278,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Federation::modify_counts(&mut queued_statuses, status);
             }
         }
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         if let Err(e) = request_shutdown {
             error!("{}", "Error shutting down Rocket".red());
             error!("{}", format!("{}", e.to_string().red()));
             return Err(e.into());
         }
         info!("Rocket shut down");
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }
     info!("{}", "All OK!".green());
     info!(
