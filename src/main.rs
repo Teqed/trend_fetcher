@@ -258,6 +258,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .collect::<Result<Vec<_>, _>>()
             .expect("Error fetching context statuses from queued statuses");
         info!("Shutting down Rocket");
+        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
         let request_shutdown = reqwest::Client::new()
             .post("https://trendfetcher.shatteredsky.net/shutdown")
             .send()
@@ -279,7 +280,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 Federation::modify_counts(&mut queued_statuses, status);
             }
         }
-        tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         if let Err(e) = request_shutdown {
             error!("{}", "Error shutting down Rocket".red());
             error!("{}", format!("{}", e.to_string().red()));
