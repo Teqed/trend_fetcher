@@ -4,8 +4,6 @@ use async_recursion::async_recursion;
 use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
 use reqwest::Url;
-use rocket::response::content;
-use time::OffsetDateTime;
 
 use crate::PAGE;
 use colored::Colorize;
@@ -19,40 +17,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use rocket::{self, State};
-
-#[derive(Debug, Deserialize)]
-struct Account {
-    id: String,
-    url: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct MediaAttachment {
-    id: String,
-    url: String,
-    remote_url: Option<String>,
-    preview_url: String,
-    meta: Option<AttachmentMeta>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AttachmentMeta {
-    original: Option<MediaMeta>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MediaMeta {
-    width: Option<i32>,
-    height: Option<i32>,
-    frame_rate: Option<String>,
-    duration: Option<f64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Tag {
-    name: String,
-    url: String,
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ActivityPubNote {
@@ -153,8 +117,8 @@ fn shutdown(shutdown: Shutdown) -> &'static str {
     "Shutting down..."
 }
 #[rocket::get("/users/<user>/statuses/<status_id>")]
-fn search(user: &str, status_id: &str, route_json: &rocket::State<AppState>) -> ActivityJsonResponder {
-    let status = route_json.0.iter().find(|status| status.id.path() == format!("/users/{}/statuses/{}", user, status_id)).expect("should be status");
+fn search(user: &str, status_id: &str, route_json: &State<AppState>) -> ActivityJsonResponder {
+    let status = route_json.0.iter().find(|status| status.id.path() == format!("/users/{user}/statuses/{status_id}")).expect("should be status");
     let status = serde_json::to_value(status).expect("should be valid json");
     let status: ActivityPubNote = serde_json::from_value(status).expect("should be valid status");
     ActivityJsonResponder {
@@ -184,9 +148,9 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
                 }
             }
             MediaType::Audio => {
-                let media_clone = media.url.clone().expect("should be url").to_string();
-                let extension = media_clone.split('.').last().expect("should be extension");
-                match extension {
+                let media_clone_secondary = media.url.clone().expect("should be url").to_string();
+                let extension_secondary = media_clone_secondary.split('.').last().expect("should be extension");
+                match extension_secondary {
                     "mp3" => "audio/mp3".to_string(),
                     "ogg" => "audio/ogg".to_string(),
                     _ => "audio".to_string(),
@@ -197,7 +161,7 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
         APAttachment {
             type_: "Document".to_string(),
             media_type: type_from_media,
-            url: media.remote_url.clone().unwrap_or(media.url.clone().expect("should be url")).to_string(),
+            url: media.remote_url.clone().unwrap_or_else(|| media.url.clone().expect("should be url")).to_string(),
             name: media.description.clone().map(Value::String),
             blurhash: media.blurhash.clone().unwrap_or_default(),
             focal_point: vec![0, 0],
@@ -226,7 +190,7 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
     ];
 
     let language_code = &status.language;
-    let content_map = serde_json::Map::from_iter(vec![(language_code.clone().unwrap_or(String::new()), serde_json::Value::String(status.content.clone()))]);
+    let content_map = serde_json::Map::from_iter(vec![(language_code.clone().unwrap_or_default(), serde_json::Value::String(status.content.clone()))]);
 
     ActivityPubNote {
         context,
@@ -237,9 +201,9 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
         published: status.created_at.to_string(),
         url: status.url.clone().expect("should be url"),
         uri: status.uri.clone(),
-        attributed_to: Some(status.account.uri.clone().unwrap_or(status.account.url.clone()).to_string()),
+        attributed_to: Some(status.account.uri.clone().unwrap_or_else(|| status.account.url.clone()).to_string()),
         to: vec!["https://www.w3.org/ns/activitystreams#Public".to_string()],
-        cc: vec![format!("{}/followers", status.account.uri.clone().unwrap_or(status.account.url.clone()))],
+        cc: vec![format!("{}/followers", status.account.uri.clone().unwrap_or_else(|| status.account.url.clone()))],
         sensitive: status.sensitive,
         atom_uri: Some(status.uri.clone()),
         in_reply_to_atom_uri: None,
@@ -385,7 +349,7 @@ impl Federation {
             debug!("Status not found in database, searching for it: {uri}");
             let status_id_from_uri = status.uri.as_ref().split('/').last().expect("should be Status ID").to_string();
             let user_name_without_domain = status.account.acct.split('@').next().expect("should be user name");
-            let replacement_uri = format!("https://trendfetcher.shatteredsky.net/users/{user}/statuses/{status_id}", user = user_name_without_domain, status_id = status_id_from_uri);
+            let replacement_uri = format!("https://trendfetcher.shatteredsky.net/users/{user_name_without_domain}/statuses/{status_id_from_uri}");
             let search_url = format!("https://{home_instance_url}/api/v2/search?q={replacement_uri}&resolve=true");
             debug!("Searching for status: {uri}", uri = uri);
             let search_result = ClientBuilder::new(reqwest::Client::new())
@@ -441,7 +405,7 @@ impl Federation {
                         let message: String = format!("Status not found in database: {uri}");
                         Err(mastodon_async::Error::Other(message))
                     },
-                    |status| Ok(status.id),
+                    |status_record| Ok(status_record.id),
                 )
         }
     }
@@ -538,9 +502,9 @@ impl Federation {
     }
 
     pub async fn start_rocket(statuses: HashMap<String, Status>) {
-        let statuses = statuses.iter().map(|(_, status)| convert_status_to_activitypub(status)).collect::<Vec<_>>();
+        let statuses = statuses.values().map(convert_status_to_activitypub).collect::<Vec<_>>();
         let state = AppState(statuses);
-        rocket::build()
+        #[allow(clippy::no_effect_underscore_binding)] let _ = rocket::build()
             .mount("/", rocket::routes![search, shutdown])
             .manage(state)
             .launch()
@@ -658,22 +622,18 @@ async fn get_status_descendants(
     debug!("Fetching context for status: {}", &status.uri);
     let original_id = StatusId::new(
         status
-            .uri
-            .to_string()
-            .split('/')
+            .uri.as_ref().split('/')
             .last()
             .expect("should be Status ID")
             .to_string(),
     );
     let original_id_string = &status
-        .uri
-        .to_string()
-        .split('/')
+        .uri.as_ref().split('/')
         .last()
         .expect("should be Status ID")
         .to_string();
-    if !original_id_string.chars().all(char::is_alphanumeric) {
-        warn!("Original ID is not alphanumeric, skipping: {original_id}");
+    if !original_id_string.chars().all(char::is_numeric) {
+        warn!("Original ID is not numeric, skipping: {original_id}");
         return None;
     }
     debug!("Original ID: {original_id}");
@@ -685,25 +645,8 @@ async fn get_status_descendants(
     if status.in_reply_to_id.is_some() {
         debug!("Status is a reply, skipping: {}", &status.uri);
         return None;
-        // let in_reply_to_id = status.in_reply_to_id.clone().expect("should be in_reply_to_id");
-        // let Some(context) = get_status_context(instance_collection, base_server, in_reply_to_id).await
-        // else {
-        //     warn!("Error fetching context");
-        //     return None;
-        // };
-        // debug!(
-        //     "Fetched context for status: {}, ancestors: {}, descendants: {}",
-        //     &status.uri,
-        //     context.ancestors.len(),
-        //     context.descendants.len()
-        // );
-        // return Some(context.descendants);
     }
-    let Some(context) = get_status_context(instance_collection, base_server, original_id).await
-    else {
-        warn!("Error fetching context");
-        return None;
-    };
+    let context = get_status_context(instance_collection, base_server, original_id).await?;
     debug!(
         "Fetched context for status: {}, ancestors: {}, descendants: {}",
         &status.uri,
