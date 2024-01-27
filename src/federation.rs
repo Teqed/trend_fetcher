@@ -382,7 +382,7 @@ impl Federation {
                 error!("Error HTTP: {}", search_result.status());
                 return Err(mastodon_async::Error::Other("Search for Status".to_string()));
             }
-            debug!("Search success for status: {uri}", uri = uri);
+            info!("Search success for status: {uri}", uri = uri);
             let search_result = search_result.text().await.expect("should be search result");
             let search_result_result = serde_json::from_str::<SearchResult>(&search_result);
             if let Err(err) = search_result_result {
