@@ -5,7 +5,7 @@ use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
 use reqwest::Url;
 
-use crate::PAGE;
+use crate::{Client, Token, PAGE};
 use colored::Colorize;
 use sqlx::postgres::PgPool;
 use tracing::{debug, error, info, warn};
@@ -95,6 +95,7 @@ struct AppState(Vec<ActivityPubNote>);
 use rocket::request::Request;
 use rocket::response::{self, Response, Responder};
 use rocket::serde::json::Json;
+use crate::Instance;
 
 
 struct ActivityJsonResponder {
@@ -229,13 +230,14 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
     }
 }
 
+
 /// Struct for interacting with Fediverse APIs.
 pub struct Federation;
 
 /// Implementation of Federation.
 impl Federation {
     /// Registers a server with the Mastodon instance.
-    pub(crate) async fn register(server: &str) -> Result<Mastodon> {
+    pub async fn register(server: &str) -> Result<Mastodon> {
         if let Ok(data) =
             mastodon_async::helpers::toml::from_file(format!("federation/{server}-data.toml"))
         {
@@ -260,32 +262,45 @@ impl Federation {
         Ok(mastodon)
     }
 
-    /// Gets an instance from the instance collection, or registers it if it doesn't exist.
-    pub async fn get_instance_token(
-        instance_collection: &mut HashMap<String, String>,
+    pub async fn get_instance(
+        client_collection: &mut HashMap<String, Instance>,
         server: &str,
-    ) -> Option<String> {
+        should_register: bool,
+    ) -> Instance {
         let server = server.strip_prefix("https://").unwrap_or(server);
-        if !instance_collection.contains_key(server) {
-            debug!("Registering instance: {server}");
-            let instance = Self::register(server)
-                .await
-                .expect("should be registered instance");
-            let instance_token = instance.data.token.to_string();
-            instance_collection.insert(server.to_string(), instance_token.clone());
-            return Some(instance_token);
+        if !client_collection.contains_key(server) {
+            debug!("Creating new client for instance: {server}");
+            if should_register {
+                let client = ClientBuilder::new(reqwest::Client::new())
+                    .with(RetryAfterMiddleware::new())
+                    .build();
+                let mastodon_instance = Self::register(server).await.expect("should be Mastodon");
+                let token = mastodon_instance.data.token.to_string();
+                let instance = Instance::InstanceWithToken { client, token };
+                client_collection.insert(server.to_string(), instance.clone());
+                return instance;
+            }
+            let client = ClientBuilder::new(reqwest::Client::new())
+                .with(RetryAfterMiddleware::new())
+                .build();
+            let instance = Instance::InstanceWithoutToken {
+                client,
+            };
+            client_collection.insert(server.to_string(), instance.clone());
+            return instance;
         }
-        Some(instance_collection
+        let instance = client_collection
             .get(server)
-            .expect("should be registered instance")
-            .clone())
+            .expect("should be registered instance");
+        instance.clone()
     }
 
     /// Fetches trending hashtags from the specified instance.
-    pub async fn fetch_trending_statuses(base: &str) -> Result<Vec<Status>> {
+    pub async fn fetch_trending_statuses(base: &str, instance: &Instance) -> Result<Vec<Status>> {
         info!("Fetching trending statuses from {base}");
+        let client = instance.client();
         let base = base.strip_prefix("https://").unwrap_or(base);
-        let url = format!("https://{base}/api/v1/trends/statuses");
+        let endpoint = "/api/v1/trends/statuses";
         let mut offset = 0;
         let limit = 40; // Mastodon API limit; default 20, max 40
         let mut trends = Vec::new();
@@ -293,31 +308,30 @@ impl Federation {
             let mut params = HashMap::new();
             params.insert("offset", offset.to_string());
             params.insert("limit", limit.to_string());
-            let response = ClientBuilder::new(reqwest::Client::new())
-                .with(RetryAfterMiddleware::new())
-                .build()
-                .get(&url).query(&params).send().await;
+            let response = client
+                .get(endpoint).query(&params).send().await;
             if response.is_err() {
                 error!(
-                    "Error HTTP: {} on {}",
+                    "Error HTTP: {} on {} {}",
                     response.expect_err("Trending statuses error"),
-                    url.red()
+                    base,
+                    endpoint.red()
                 );
                 break;
             }
             let response = response.expect("should be trending statuses");
             if !response.status().is_success() {
-                error!("Error HTTP: {} on {}", response.status(), url.red());
+                error!("Error HTTP: {} on {} {}", response.status(), base, endpoint.red());
                 break;
             }
             let json = response.text().await.expect("should be trending statuses");
-            debug!("Reading Trending JSON from {}", url);
+            debug!("Reading Trending JSON from {} {}", base, endpoint);
             let trending_statuses_raw: std::prelude::v1::Result<Vec<Status>, serde_json::Error> =
                 serde_json::from_str(&json);
             if trending_statuses_raw.is_err() {
                 warn!("Parsing Issue on Trending JSON");
                 let error = trending_statuses_raw.expect_err("Trending statuses error");
-                error!("Error JSON: {} on {}", error, url.red());
+                error!("Error JSON: {} on {} {}", error, base, endpoint.red());
                 json_window(&error, &json);
                 break;
             }
@@ -441,7 +455,7 @@ impl Federation {
         pool: &PgPool,
         home_server_url: &String,
         home_server_token: &String,
-        instance_collection: &HashMap<String, String>,
+        instance_collection: &HashMap<String, Instance>,
     ) -> Result<Option<HashMap<String, Status>>> {
         debug!("Status: {}", &status.uri);
         let original_id_string = &status
@@ -531,7 +545,7 @@ async fn update_status(
     status: &Status,
     status_id: i64,
     pool: &sqlx::Pool<sqlx::Postgres>,
-    instance_collection: &HashMap<String, String>,
+    instance_collection: &HashMap<String, Instance>,
 ) -> Option<Vec<Status>> {
     let offset_date_time = time::OffsetDateTime::now_utc();
     let current_time =
@@ -590,7 +604,7 @@ async fn insert_status(
     status_id: i64,
     status: &Status,
     pool: &sqlx::Pool<sqlx::Postgres>,
-    instance_collection: &HashMap<String, String>,
+    instance_collection: &HashMap<String, Instance>,
 ) -> Option<Vec<Status>> {
     let offset_date_time = time::OffsetDateTime::now_utc();
     let current_time =
@@ -629,7 +643,7 @@ async fn insert_status(
 
 #[allow(unreachable_code, unused_variables)] async fn get_status_descendants(
     status: &Status,
-    instance_collection: &HashMap<String, String>,
+    instance_collection: &HashMap<String, Instance>,
 ) -> Option<Vec<Status>> {
     return None; // TODO: Temporarily disables fetching descendants while we work on the API
     debug!("Fetching context for status: {}", &status.uri);
@@ -667,7 +681,7 @@ async fn insert_status(
 
 #[async_recursion]
 async fn get_status_context(
-    instance_collection: &HashMap<String, String>,
+    instance_collection: &HashMap<String, Instance>,
     base_server: String,
     original_id: StatusId,
 ) -> Option<Context> {
@@ -675,12 +689,12 @@ async fn get_status_context(
     let url_string = format!(
         "https://{base_server}/api/v1/statuses/{original_id_string}/context"
     );
-    let instance_token = instance_collection
-        .get(&base_server);
-    if let Some(instance_token) = instance_token {
-        let response = ClientBuilder::new(reqwest::Client::new())
-            .with(RetryAfterMiddleware::new())
-            .build()
+
+
+    let instance = instance_collection.get(&base_server).expect("should be instance");
+    let client = instance.client();
+    if let Some(instance_token) = instance.token() {
+        let response = client
             .get(&url_string)
             .bearer_auth(instance_token)
             .send()
@@ -724,9 +738,7 @@ async fn get_status_context(
         }
         return Some(context.expect("should be Context of Status"));
     }
-    let response = ClientBuilder::new(reqwest::Client::new())
-        .with(RetryAfterMiddleware::new())
-        .build()
+    let response = client
         .get(&url_string).send().await;
     if response.is_err() {
         error!(

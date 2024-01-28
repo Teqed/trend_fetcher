@@ -83,6 +83,7 @@ use std::error::Error;
 use std::fs;
 use tracing::{debug, error, info, warn};
 use color_eyre::eyre::Result;
+use reqwest_middleware::ClientWithMiddleware;
 
 #[derive(Deserialize)]
 /// Configuration struct for the application.
@@ -126,6 +127,42 @@ const PAGE: usize = 40;
 /// The maximum number of futures to run concurrently.
 const MAX_FUTURES: usize = 15;
 
+#[derive(Clone)]
+enum Instance {
+    InstanceWithToken {
+        client: ClientWithMiddleware,
+        token: String,
+    },
+    InstanceWithoutToken {
+        client: ClientWithMiddleware,
+    },
+}
+
+impl Token for Instance {
+    fn token(&self) -> Option<String> {
+        match self {
+            Self::InstanceWithToken { token, .. } => Some(token.to_string()),
+            Self::InstanceWithoutToken { .. } => None,
+        }
+    }
+}
+
+impl Client for Instance {
+    fn client(&self) -> ClientWithMiddleware {
+        match self {
+            Self::InstanceWithoutToken { client } | Self::InstanceWithToken { client, .. } => client.clone(),
+        }
+    }
+}
+
+trait Token {
+    fn token(&self) -> Option<String>;
+}
+
+trait Client {
+    fn client(&self) -> ClientWithMiddleware;
+}
+
 #[tokio::main]
 #[tracing::instrument]
 /// The main function.
@@ -164,11 +201,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     };
     let mut queued_servers: HashSet<String> = HashSet::new();
-    let home_server =
-        Federation::get_instance_token(&mut instance_collection, &config.servers.home).await
-            .expect("Error getting instance token for home server");
+    let home_server_string = config.servers.home.clone();
+    let home_server: Instance =
+        Federation::get_instance(&mut instance_collection, &home_server_string, true).await;
     for server in config.servers.authenticated {
-        Federation::get_instance_token(&mut instance_collection, &server).await;
+        Federation::get_instance(&mut instance_collection, &server, true).await;
         queued_servers.insert(server);
     }
     config.servers.unauthenticated.iter().for_each(|server| {
@@ -183,8 +220,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
             "{}",
             "Fetching trending statuses from queued servers".green()
         );
-        let fetched_trending_statuses_vec = stream::iter(queued_servers.iter().cloned())
-            .map(|server| async move { Federation::fetch_trending_statuses(&server).await })
+        let mut queued_instances = HashMap::new();
+        for server in queued_servers.iter().cloned() {
+            let instance = Federation::get_instance(&mut instance_collection, &server, false).await;
+            queued_instances.insert(server, instance);
+        }
+        let fetched_trending_statuses_vec = stream::iter(queued_instances.into_iter())
+            .map(|instance| async move {
+                Federation::fetch_trending_statuses(&instance.0, &instance.1).await
+            })
             .buffer_unordered(MAX_FUTURES)
             .collect::<Vec<_>>()
             .await
@@ -239,14 +283,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
         info!("Rocket started");
-        let some_context = stream::iter(queued_statuses.clone().into_iter())
-            .map(|(_, status)| {
-                let home_server_url = config.servers.home.clone();
-                let home_server = home_server.clone();
+        let mut queued_instances = HashMap::new();
+        for (uri, status) in queued_statuses.clone() {
+            let instance = Federation::get_instance(&mut instance_collection, status.uri.as_ref(), false).await;
+            queued_instances.insert(uri, (status, instance));
+        }
+        let some_context = stream::iter(queued_instances.clone().into_iter())
+            .map(|(_, (status, _))| {
+                let home_server_string = home_server_string.clone();
+                let home_token = home_server.token().expect("should be a token");
                 let pool = pool.clone();
                 let instance_collection = instance_collection.clone();
                 async move {
-                    Federation::fetch_status(&status, &pool, &home_server_url, &home_server, &instance_collection)
+                    Federation::fetch_status(&status, &pool, &home_server_string, &home_token, &instance_collection)
                         .await
                 }
             })
