@@ -283,7 +283,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         task::spawn(async move {
             Federation::start_rocket(cloned_queued_statuses).await;
         });
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         info!("Rocket started");
         let mut queued_instances = HashMap::new();
         for (uri, status) in queued_statuses.clone() {
@@ -343,7 +343,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
             return Err(e.into());
         }
         info!("Rocket shut down");
-        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }
     info!("{}", "All OK!".green());
     info!("We saw {} trending statuses", length_of_initial_statuses);
