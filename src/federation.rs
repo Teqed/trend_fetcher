@@ -627,10 +627,11 @@ async fn insert_status(
     None
 }
 
-async fn get_status_descendants(
+#[allow(unreachable_code, unused_variables)] async fn get_status_descendants(
     status: &Status,
     instance_collection: &HashMap<String, String>,
 ) -> Option<Vec<Status>> {
+    return None; // TODO: Temporarily disables fetching descendants while we work on the API
     debug!("Fetching context for status: {}", &status.uri);
     let original_id = StatusId::new(
         status
@@ -654,10 +655,6 @@ async fn get_status_descendants(
         .host_str()
         .expect("should be base server string")
         .to_string();
-    if status.in_reply_to_id.is_some() {
-        debug!("Status is a reply, skipping: {}", &status.uri);
-        return None;
-    }
     let context = get_status_context(instance_collection, base_server, original_id).await?;
     debug!(
         "Fetched context for status: {}, ancestors: {}, descendants: {}",
