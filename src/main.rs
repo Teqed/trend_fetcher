@@ -231,7 +231,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .map(|instance| async move {
                 Federation::fetch_trending_statuses(&instance.0, &instance.1).await
             })
-            .buffer_unordered(MAX_FUTURES)
+            .buffer_unordered(MAX_FUTURES * 4)
             .collect::<Vec<_>>()
             .await
             .into_iter()
