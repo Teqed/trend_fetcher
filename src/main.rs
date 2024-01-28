@@ -291,11 +291,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let some_context = stream::iter(queued_instances.clone().into_iter())
             .map(|(_, (status, _))| {
                 let home_server_string = home_server_string.clone();
-                let home_token = home_server.token().expect("should be a token");
+                let home_instance = home_server.clone();
                 let pool = pool.clone();
                 let instance_collection = instance_collection.clone();
                 async move {
-                    Federation::fetch_status(&status, &pool, &home_server_string, &home_token, &instance_collection)
+                    Federation::fetch_status(&status, &pool, &home_server_string, &home_instance, &instance_collection)
                         .await
                 }
             })

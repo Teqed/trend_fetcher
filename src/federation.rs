@@ -299,8 +299,9 @@ impl Federation {
     pub async fn fetch_trending_statuses(base: &str, instance: &Instance) -> Result<Vec<Status>> {
         info!("Fetching trending statuses from {base}");
         let client = instance.client();
-        let base = base.strip_prefix("https://").unwrap_or(base);
+        let base = base.strip_prefix("https://").unwrap_or(base).strip_suffix('/').unwrap_or(base);
         let endpoint = "/api/v1/trends/statuses";
+        let url = format!("https://{base}{endpoint}");
         let mut offset = 0;
         let limit = 40; // Mastodon API limit; default 20, max 40
         let mut trends = Vec::new();
@@ -309,29 +310,28 @@ impl Federation {
             params.insert("offset", offset.to_string());
             params.insert("limit", limit.to_string());
             let response = client
-                .get(endpoint).query(&params).send().await;
+                .get(&url).query(&params).send().await;
             if response.is_err() {
                 error!(
-                    "Error HTTP: {} on {} {}",
+                    "Error HTTP: {} on {}",
                     response.expect_err("Trending statuses error"),
-                    base,
-                    endpoint.red()
+                    url.red()
                 );
                 break;
             }
             let response = response.expect("should be trending statuses");
             if !response.status().is_success() {
-                error!("Error HTTP: {} on {} {}", response.status(), base, endpoint.red());
+                error!("Error HTTP: {} on {}", response.status(), url.red());
                 break;
             }
             let json = response.text().await.expect("should be trending statuses");
-            debug!("Reading Trending JSON from {} {}", base, endpoint);
+            debug!("Reading Trending JSON from {}", url);
             let trending_statuses_raw: std::prelude::v1::Result<Vec<Status>, serde_json::Error> =
                 serde_json::from_str(&json);
             if trending_statuses_raw.is_err() {
                 warn!("Parsing Issue on Trending JSON");
                 let error = trending_statuses_raw.expect_err("Trending statuses error");
-                error!("Error JSON: {} on {} {}", error, base, endpoint.red());
+                error!("Error JSON: {} on {}", error, url.red());
                 json_window(&error, &json);
                 break;
             }
@@ -349,8 +349,10 @@ impl Federation {
 
     /// Find the status ID for a given URI from the home instance's database.
     #[async_recursion]
-    pub async fn find_status_id(status: &Status, pool: &PgPool, home_instance_url: &String, home_instance_token: &String) -> Result<i64> {
+    pub async fn find_status_id(status: &Status, pool: &PgPool, home_instance_url: &String, home_instance: &Instance) -> Result<i64> {
         debug!("Finding status ID for {uri}", uri = status.uri);
+        let client = home_instance.client();
+        let home_instance_token = home_instance.token().expect("should be token");
         let uri = status.uri.to_string();
         let select_statement = sqlx::query!(r#"SELECT id FROM statuses WHERE uri = $1"#, uri)
             .fetch_one(pool)
@@ -370,9 +372,7 @@ impl Federation {
             let replacement_uri = format!("https://trendfetcher.shatteredsky.net/users/{user_name_without_domain}/statuses/{status_id_from_uri}");
             let search_url = format!("https://{home_instance_url}/api/v2/search?q={replacement_uri}&resolve=true");
             debug!("Searching for status: {uri}", uri = uri);
-            let search_result = ClientBuilder::new(reqwest::Client::new())
-                .with(RetryAfterMiddleware::new())
-                .build()
+            let search_result = client
                 .get(&search_url).bearer_auth(home_instance_token).send().await;
             if search_result.is_err() {
                 let received_error = search_result.expect_err("should be error");
@@ -395,7 +395,7 @@ impl Federation {
                     let duration = duration.to_std().expect("should be std::time::Duration");
                     info!("Sleeping for {duration} seconds for {uri}", duration = duration.as_secs(), uri = uri);
                     tokio::time::sleep(duration).await;
-                    return Self::find_status_id(status, pool, home_instance_url, home_instance_token).await;
+                    return Self::find_status_id(status, pool, home_instance_url, home_instance).await;
                 }
                 error!("Error HTTP: {}", search_result.status());
                 return Err(mastodon_async::Error::Other("Search for Status".to_string()));
@@ -454,7 +454,7 @@ impl Federation {
         status: &Status,
         pool: &PgPool,
         home_server_url: &String,
-        home_server_token: &String,
+        home_server_instance: &Instance,
         instance_collection: &HashMap<String, Instance>,
     ) -> Result<Option<HashMap<String, Status>>> {
         debug!("Status: {}", &status.uri);
@@ -468,7 +468,7 @@ impl Federation {
             return Ok(None);
         }
         let mut additional_context_statuses = HashMap::new();
-        let status_id = Self::find_status_id(status, pool, home_server_url, home_server_token).await;
+        let status_id = Self::find_status_id(status, pool, home_server_url, home_server_instance).await;
         if status_id.is_err() {
             warn!("Status not found by home server, skipping: {} , Error: {}", &status.uri, status_id.expect_err("should be error"));
             return Ok(None);
