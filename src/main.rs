@@ -250,7 +250,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 if !fetched_servers.contains(base) {
                     // This is a load-bearing comment that prevents the linter from collapsing these statements
                     if queued_servers.insert(base.to_string()) {
-                        info! {"{}", format!("Queued server: {base}")};
+                        debug! {"{}", format!("Queued server: {base}")};
                     }
                 }
                 Federation::modify_counts(&mut fetched_trending_statuses, status);
