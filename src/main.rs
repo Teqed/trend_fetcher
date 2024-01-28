@@ -72,18 +72,18 @@
 #![allow(clippy::multiple_crate_versions, clippy::too_many_lines)]
 #![forbid(unsafe_code)]
 
+use color_eyre::eyre::Result;
 use colored::Colorize;
 use federation::Federation;
 use futures::stream::{self, StreamExt};
+use reqwest_middleware::ClientWithMiddleware;
 use serde::Deserialize;
 use sqlx::postgres::PgPool;
-use tokio::task;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fs;
+use tokio::task;
 use tracing::{debug, error, info, warn};
-use color_eyre::eyre::Result;
-use reqwest_middleware::ClientWithMiddleware;
 
 #[derive(Deserialize)]
 /// Configuration struct for the application.
@@ -150,7 +150,9 @@ impl Token for Instance {
 impl Client for Instance {
     fn client(&self) -> ClientWithMiddleware {
         match self {
-            Self::InstanceWithoutToken { client } | Self::InstanceWithToken { client, .. } => client.clone(),
+            Self::InstanceWithoutToken { client } | Self::InstanceWithToken { client, .. } => {
+                client.clone()
+            }
         }
     }
 }
@@ -285,7 +287,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         info!("Rocket started");
         let mut queued_instances = HashMap::new();
         for (uri, status) in queued_statuses.clone() {
-            let instance = Federation::get_instance(&mut instance_collection, status.uri.as_ref(), false).await;
+            let instance =
+                Federation::get_instance(&mut instance_collection, status.uri.as_ref(), false)
+                    .await;
             queued_instances.insert(uri, (status, instance));
         }
         let some_context = stream::iter(queued_instances.clone().into_iter())
@@ -295,8 +299,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 let pool = pool.clone();
                 let instance_collection = instance_collection.clone();
                 async move {
-                    Federation::fetch_status(&status, &pool, &home_server_string, &home_instance, &instance_collection)
-                        .await
+                    Federation::fetch_status(
+                        &status,
+                        &pool,
+                        &home_server_string,
+                        &home_instance,
+                        &instance_collection,
+                    )
+                    .await
                 }
             })
             .buffer_unordered(MAX_FUTURES)
@@ -336,11 +346,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     }
     info!("{}", "All OK!".green());
+    info!("We saw {} trending statuses", length_of_initial_statuses);
     info!(
-        "We saw {} trending statuses",
-        length_of_initial_statuses
+        "We saw {} context statuses",
+        fetched_statuses.len() - length_of_initial_statuses
     );
-    info!("We saw {} context statuses", fetched_statuses.len() - length_of_initial_statuses);
     let end = time::OffsetDateTime::now_utc();
     let duration = end - start;
     info!("Duration: {duration}");

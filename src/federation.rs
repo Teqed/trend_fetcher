@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use async_recursion::async_recursion;
+use std::collections::HashMap;
 
 use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
@@ -92,11 +92,10 @@ struct APFirst {
 }
 struct AppState(Vec<ActivityPubNote>);
 
-use rocket::request::Request;
-use rocket::response::{self, Response, Responder};
-use rocket::serde::json::Json;
 use crate::Instance;
-
+use rocket::request::Request;
+use rocket::response::{self, Responder, Response};
+use rocket::serde::json::Json;
 
 struct ActivityJsonResponder {
     inner: Json<ActivityPubNote>,
@@ -118,8 +117,15 @@ fn shutdown(shutdown: Shutdown) -> &'static str {
     "Shutting down..."
 }
 #[rocket::get("/users/<user>/statuses/<status_id>")]
-fn search(user: &str, status_id: &str, route_json: &State<AppState>) -> Option<ActivityJsonResponder> {
-    let status = route_json.0.iter().find(|status| status.id.path() == format!("/users/{user}/statuses/{status_id}"))?;
+fn search(
+    user: &str,
+    status_id: &str,
+    route_json: &State<AppState>,
+) -> Option<ActivityJsonResponder> {
+    let status = route_json
+        .0
+        .iter()
+        .find(|status| status.id.path() == format!("/users/{user}/statuses/{status_id}"))?;
     let status = serde_json::to_value(status).expect("should be valid json");
     let status: ActivityPubNote = serde_json::from_value(status).expect("should be valid status");
     Some(ActivityJsonResponder {
@@ -128,48 +134,56 @@ fn search(user: &str, status_id: &str, route_json: &State<AppState>) -> Option<A
 }
 
 fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
-    let media_attachments: Vec<APAttachment> = status.media_attachments.iter().map(|media| {
-        let meta = media.meta.as_ref().and_then(|m| m.original.as_ref());
-        let media_clone = media.url.clone().expect("should be url").to_string();
-        let extension = media_clone.split('.').last().expect("should be extension");
-        let type_from_media = match media.media_type {
-            MediaType::Image => {
-                match extension {
+    let media_attachments: Vec<APAttachment> = status
+        .media_attachments
+        .iter()
+        .map(|media| {
+            let meta = media.meta.as_ref().and_then(|m| m.original.as_ref());
+            let media_clone = media.url.clone().expect("should be url").to_string();
+            let extension = media_clone.split('.').last().expect("should be extension");
+            let type_from_media = match media.media_type {
+                MediaType::Image => match extension {
                     "png" => "image/png".to_string(),
                     "jpg" | "jpeg" => "image/jpeg".to_string(),
                     "gif" => "image/gif".to_string(),
                     _ => "image".to_string(),
-                }
-            }
-            MediaType::Video | MediaType::Gifv => {
-                match extension {
+                },
+                MediaType::Video | MediaType::Gifv => match extension {
                     "mp4" => "video/mp4".to_string(),
                     "webm" => "video/webm".to_string(),
                     _ => "video".to_string(),
+                },
+                MediaType::Audio => {
+                    let media_clone_secondary =
+                        media.url.clone().expect("should be url").to_string();
+                    let extension_secondary = media_clone_secondary
+                        .split('.')
+                        .last()
+                        .expect("should be extension");
+                    match extension_secondary {
+                        "mp3" => "audio/mp3".to_string(),
+                        "ogg" => "audio/ogg".to_string(),
+                        _ => "audio".to_string(),
+                    }
                 }
+                MediaType::Unknown => "unknown".to_string(),
+            };
+            APAttachment {
+                type_: "Document".to_string(),
+                media_type: type_from_media,
+                url: media
+                    .remote_url
+                    .clone()
+                    .unwrap_or_else(|| media.url.clone().expect("should be url"))
+                    .to_string(),
+                name: media.description.clone().map(Value::String),
+                blurhash: media.blurhash.clone().unwrap_or_default(),
+                focal_point: vec![0, 0],
+                width: meta.and_then(|m| m.width),
+                height: meta.and_then(|m| m.height),
             }
-            MediaType::Audio => {
-                let media_clone_secondary = media.url.clone().expect("should be url").to_string();
-                let extension_secondary = media_clone_secondary.split('.').last().expect("should be extension");
-                match extension_secondary {
-                    "mp3" => "audio/mp3".to_string(),
-                    "ogg" => "audio/ogg".to_string(),
-                    _ => "audio".to_string(),
-                }
-            }
-            MediaType::Unknown => "unknown".to_string(),
-        };
-        APAttachment {
-            type_: "Document".to_string(),
-            media_type: type_from_media,
-            url: media.remote_url.clone().unwrap_or_else(|| media.url.clone().expect("should be url")).to_string(),
-            name: media.description.clone().map(Value::String),
-            blurhash: media.blurhash.clone().unwrap_or_default(),
-            focal_point: vec![0, 0],
-            width: meta.and_then(|m| m.width),
-            height: meta.and_then(|m| m.height),
-        }
-    }).collect();
+        })
+        .collect();
 
     let context = vec![
         Value::String("https://www.w3.org/ns/activitystreams".to_string()),
@@ -191,7 +205,10 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
     ];
 
     let language_code = &status.language;
-    let content_map = serde_json::Map::from_iter(vec![(language_code.clone().unwrap_or_default(), serde_json::Value::String(status.content.clone()))]);
+    let content_map = serde_json::Map::from_iter(vec![(
+        language_code.clone().unwrap_or_default(),
+        serde_json::Value::String(status.content.clone()),
+    )]);
 
     ActivityPubNote {
         context,
@@ -202,9 +219,23 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
         published: status.created_at.to_string(),
         url: status.url.clone().expect("should be url"),
         uri: status.uri.clone(),
-        attributed_to: Some(status.account.uri.clone().unwrap_or_else(|| status.account.url.clone()).to_string()),
+        attributed_to: Some(
+            status
+                .account
+                .uri
+                .clone()
+                .unwrap_or_else(|| status.account.url.clone())
+                .to_string(),
+        ),
         to: vec!["https://www.w3.org/ns/activitystreams#Public".to_string()],
-        cc: vec![format!("{}/followers", status.account.uri.clone().unwrap_or_else(|| status.account.url.clone()))],
+        cc: vec![format!(
+            "{}/followers",
+            status
+                .account
+                .uri
+                .clone()
+                .unwrap_or_else(|| status.account.url.clone())
+        )],
         sensitive: status.sensitive,
         atom_uri: Some(status.uri.clone()),
         in_reply_to_atom_uri: None,
@@ -212,24 +243,30 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
         content: status.content.clone(),
         content_map,
         attachment: media_attachments,
-        tag: status.tags.iter().map(|tag| APTag {
-            type_: "Hashtag".to_string(),
-            href: tag.url.clone(),
-            name: format!("#{}", tag.name),
-        }).collect(),
+        tag: status
+            .tags
+            .iter()
+            .map(|tag| APTag {
+                type_: "Hashtag".to_string(),
+                href: tag.url.clone(),
+                name: format!("#{}", tag.name),
+            })
+            .collect(),
         replies: APReplies {
             id: format!("{}/replies", status.uri.clone()),
             type_: "Collection".to_string(),
             first: APFirst {
                 type_: "CollectionPage".to_string(),
-                next: format!("{}/replies?only_other_accounts=true&page=true", status.uri.clone()),
+                next: format!(
+                    "{}/replies?only_other_accounts=true&page=true",
+                    status.uri.clone()
+                ),
                 part_of: Some(format!("{}/replies", status.uri.clone())),
                 items: Vec::new(),
             },
         },
     }
 }
-
 
 /// Struct for interacting with Fediverse APIs.
 pub struct Federation;
@@ -283,9 +320,7 @@ impl Federation {
             let client = ClientBuilder::new(reqwest::Client::new())
                 .with(RetryAfterMiddleware::new())
                 .build();
-            let instance = Instance::InstanceWithoutToken {
-                client,
-            };
+            let instance = Instance::InstanceWithoutToken { client };
             client_collection.insert(server.to_string(), instance.clone());
             return instance;
         }
@@ -299,7 +334,11 @@ impl Federation {
     pub async fn fetch_trending_statuses(base: &str, instance: &Instance) -> Result<Vec<Status>> {
         info!("Fetching trending statuses from {base}");
         let client = instance.client();
-        let base = base.strip_prefix("https://").unwrap_or(base).strip_suffix('/').unwrap_or(base);
+        let base = base
+            .strip_prefix("https://")
+            .unwrap_or(base)
+            .strip_suffix('/')
+            .unwrap_or(base);
         let endpoint = "/api/v1/trends/statuses";
         let url = format!("https://{base}{endpoint}");
         let mut offset = 0;
@@ -309,8 +348,7 @@ impl Federation {
             let mut params = HashMap::new();
             params.insert("offset", offset.to_string());
             params.insert("limit", limit.to_string());
-            let response = client
-                .get(&url).query(&params).send().await;
+            let response = client.get(&url).query(&params).send().await;
             if response.is_err() {
                 error!(
                     "Error HTTP: {} on {}",
@@ -349,7 +387,12 @@ impl Federation {
 
     /// Find the status ID for a given URI from the home instance's database.
     #[async_recursion]
-    pub async fn find_status_id(status: &Status, pool: &PgPool, home_instance_url: &String, home_instance: &Instance) -> Result<i64> {
+    pub async fn find_status_id(
+        status: &Status,
+        pool: &PgPool,
+        home_instance_url: &String,
+        home_instance: &Instance,
+    ) -> Result<i64> {
         debug!("Finding status ID for {uri}", uri = status.uri);
         let client = home_instance.client();
         let home_instance_token = home_instance.token().expect("should be token");
@@ -365,23 +408,45 @@ impl Federation {
             debug!("Status not found in database, searching for it: {uri}");
             if status.in_reply_to_id.is_some() {
                 debug!("Status is a reply, skipping: {}", &status.uri);
-                return Err(mastodon_async::Error::Other("Status is a reply".to_string()));
+                return Err(mastodon_async::Error::Other(
+                    "Status is a reply".to_string(),
+                ));
             }
-            let status_id_from_uri = status.uri.as_ref().split('/').last().expect("should be Status ID").to_string();
-            let user_name_without_domain = status.account.acct.split('@').next().expect("should be user name");
+            let status_id_from_uri = status
+                .uri
+                .as_ref()
+                .split('/')
+                .last()
+                .expect("should be Status ID")
+                .to_string();
+            let user_name_without_domain = status
+                .account
+                .acct
+                .split('@')
+                .next()
+                .expect("should be user name");
             let replacement_uri = format!("https://trendfetcher.shatteredsky.net/users/{user_name_without_domain}/statuses/{status_id_from_uri}");
-            let search_url = format!("https://{home_instance_url}/api/v2/search?q={replacement_uri}&resolve=true");
+            let search_url = format!(
+                "https://{home_instance_url}/api/v2/search?q={replacement_uri}&resolve=true"
+            );
             debug!("Searching for status: {uri}", uri = uri);
             let search_result = client
-                .get(&search_url).bearer_auth(home_instance_token).send().await;
+                .get(&search_url)
+                .bearer_auth(home_instance_token)
+                .send()
+                .await;
             if search_result.is_err() {
                 let received_error = search_result.expect_err("should be error");
                 error!("Error result: {}", received_error);
-                return Err(mastodon_async::Error::Other("Search for Status".to_string()));
+                return Err(mastodon_async::Error::Other(
+                    "Search for Status".to_string(),
+                ));
             }
             let search_result = search_result.expect("should be search result");
             if !search_result.status().is_success() {
-                if (search_result.status().as_u16() == 429) || (search_result.status().to_string().contains("429")) {
+                if (search_result.status().as_u16() == 429)
+                    || (search_result.status().to_string().contains("429"))
+                {
                     let retry_after = search_result
                         .headers()
                         .get("x-ratelimit-reset")
@@ -393,12 +458,19 @@ impl Federation {
                     let now = chrono::Utc::now();
                     let duration = retry_after - now;
                     let duration = duration.to_std().expect("should be std::time::Duration");
-                    info!("Sleeping for {duration} seconds for {uri}", duration = duration.as_secs(), uri = uri);
+                    info!(
+                        "Sleeping for {duration} seconds for {uri}",
+                        duration = duration.as_secs(),
+                        uri = uri
+                    );
                     tokio::time::sleep(duration).await;
-                    return Self::find_status_id(status, pool, home_instance_url, home_instance).await;
+                    return Self::find_status_id(status, pool, home_instance_url, home_instance)
+                        .await;
                 }
                 error!("Error HTTP: {}", search_result.status());
-                return Err(mastodon_async::Error::Other("Search for Status".to_string()));
+                return Err(mastodon_async::Error::Other(
+                    "Search for Status".to_string(),
+                ));
             }
             info!("Search success for status: {uri}", uri = uri);
             let search_result = search_result.text().await.expect("should be search result");
@@ -406,9 +478,12 @@ impl Federation {
             if let Err(err) = search_result_result {
                 error!("Error JSON: {} on {}", err, search_url);
                 json_window(&err, &search_result);
-                return Err(mastodon_async::Error::Other("Search for Status".to_string()));
+                return Err(mastodon_async::Error::Other(
+                    "Search for Status".to_string(),
+                ));
             }
-            let search_result_result_result: SearchResult = search_result_result.expect("should be search result");
+            let search_result_result_result: SearchResult =
+                search_result_result.expect("should be search result");
             if search_result_result_result.statuses.is_empty() {
                 let message: String = format!("Status not found by home server: {uri}");
                 return Err(mastodon_async::Error::Other(message));
@@ -459,7 +534,9 @@ impl Federation {
     ) -> Result<Option<HashMap<String, Status>>> {
         debug!("Status: {}", &status.uri);
         let original_id_string = &status
-            .uri.as_ref().split('/')
+            .uri
+            .as_ref()
+            .split('/')
             .last()
             .expect("should be Status ID")
             .to_string();
@@ -468,9 +545,14 @@ impl Federation {
             return Ok(None);
         }
         let mut additional_context_statuses = HashMap::new();
-        let status_id = Self::find_status_id(status, pool, home_server_url, home_server_instance).await;
+        let status_id =
+            Self::find_status_id(status, pool, home_server_url, home_server_instance).await;
         if status_id.is_err() {
-            warn!("Status not found by home server, skipping: {} , Error: {}", &status.uri, status_id.expect_err("should be error"));
+            warn!(
+                "Status not found by home server, skipping: {} , Error: {}",
+                &status.uri,
+                status_id.expect_err("should be error")
+            );
             return Ok(None);
         }
         let status_id = status_id.expect("should be status ID");
@@ -528,9 +610,13 @@ impl Federation {
     }
 
     pub async fn start_rocket(statuses: HashMap<String, Status>) {
-        let statuses = statuses.values().map(convert_status_to_activitypub).collect::<Vec<_>>();
+        let statuses = statuses
+            .values()
+            .map(convert_status_to_activitypub)
+            .collect::<Vec<_>>();
         let state = AppState(statuses);
-        #[allow(clippy::no_effect_underscore_binding)] let _ = rocket::build()
+        #[allow(clippy::no_effect_underscore_binding)]
+        let _ = rocket::build()
             .mount("/", rocket::routes![search, shutdown])
             .manage(state)
             .launch()
@@ -641,7 +727,8 @@ async fn insert_status(
     None
 }
 
-#[allow(unreachable_code, unused_variables)] async fn get_status_descendants(
+#[allow(unreachable_code, unused_variables)]
+async fn get_status_descendants(
     status: &Status,
     instance_collection: &HashMap<String, Instance>,
 ) -> Option<Vec<Status>> {
@@ -649,13 +736,17 @@ async fn insert_status(
     debug!("Fetching context for status: {}", &status.uri);
     let original_id = StatusId::new(
         status
-            .uri.as_ref().split('/')
+            .uri
+            .as_ref()
+            .split('/')
             .last()
             .expect("should be Status ID")
             .to_string(),
     );
     let original_id_string = &status
-        .uri.as_ref().split('/')
+        .uri
+        .as_ref()
+        .split('/')
         .last()
         .expect("should be Status ID")
         .to_string();
@@ -686,12 +777,11 @@ async fn get_status_context(
     original_id: StatusId,
 ) -> Option<Context> {
     let original_id_string = &original_id.to_string();
-    let url_string = format!(
-        "https://{base_server}/api/v1/statuses/{original_id_string}/context"
-    );
+    let url_string = format!("https://{base_server}/api/v1/statuses/{original_id_string}/context");
 
-
-    let instance = instance_collection.get(&base_server).expect("should be instance");
+    let instance = instance_collection
+        .get(&base_server)
+        .expect("should be instance");
     let client = instance.client();
     if let Some(instance_token) = instance.token() {
         let response = client
@@ -722,11 +812,20 @@ async fn get_status_context(
                 let now = chrono::Utc::now();
                 let duration = retry_after - now;
                 let duration = duration.to_std().expect("should be std::time::Duration");
-                info!("Sleeping for {duration} seconds for {uri}", duration = duration.as_secs(), uri = &url_string);
+                info!(
+                    "Sleeping for {duration} seconds for {uri}",
+                    duration = duration.as_secs(),
+                    uri = &url_string
+                );
                 tokio::time::sleep(duration).await;
                 return get_status_context(instance_collection, base_server, original_id).await;
             }
-            error!("{} {} from {}", "Error HTTP:".red(), response.status(), &url_string);
+            error!(
+                "{} {} from {}",
+                "Error HTTP:".red(),
+                response.status(),
+                &url_string
+            );
             return None;
         }
         let json = response.text().await.expect("should be Context of Status");
@@ -738,8 +837,7 @@ async fn get_status_context(
         }
         return Some(context.expect("should be Context of Status"));
     }
-    let response = client
-        .get(&url_string).send().await;
+    let response = client.get(&url_string).send().await;
     if response.is_err() {
         error!(
             "{} {} from {}",
@@ -763,11 +861,20 @@ async fn get_status_context(
             let now = chrono::Utc::now();
             let duration = retry_after - now;
             let duration = duration.to_std().expect("should be std::time::Duration");
-            info!("Sleeping for {duration} seconds for {uri}", duration = duration.as_secs(), uri = &url_string);
+            info!(
+                "Sleeping for {duration} seconds for {uri}",
+                duration = duration.as_secs(),
+                uri = &url_string
+            );
             tokio::time::sleep(duration).await;
             return get_status_context(instance_collection, base_server, original_id).await;
         }
-        error!("{} {} from {}", "Error HTTP:".red(), response.status(), &url_string);
+        error!(
+            "{} {} from {}",
+            "Error HTTP:".red(),
+            response.status(),
+            &url_string
+        );
         return None;
     }
     let json = response.text().await.expect("should be Context of Status");
