@@ -347,6 +347,10 @@ impl Federation {
             Ok(status_record.id)
         } else {
             debug!("Status not found in database, searching for it: {uri}");
+            if status.in_reply_to_id.is_some() {
+                debug!("Status is a reply, skipping: {}", &status.uri);
+                return Err(mastodon_async::Error::Other("Status is a reply".to_string()));
+            }
             let status_id_from_uri = status.uri.as_ref().split('/').last().expect("should be Status ID").to_string();
             let user_name_without_domain = status.account.acct.split('@').next().expect("should be user name");
             let replacement_uri = format!("https://trendfetcher.shatteredsky.net/users/{user_name_without_domain}/statuses/{status_id_from_uri}");
