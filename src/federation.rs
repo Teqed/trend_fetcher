@@ -912,7 +912,7 @@ fn json_window(err: &serde_json::Error, json: &String) {
     }
     let json = String::from_utf8_lossy(&json[start..end]);
     let json = json.replace(
-        &json[..(column - 1)],
+        &json[..(column)],
         &json[(column)..=(column + 5)].red().to_string(),
     );
     error!("Error JSON preview window: {}", json);
