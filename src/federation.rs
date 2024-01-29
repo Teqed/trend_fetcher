@@ -898,23 +898,28 @@ fn json_window(err: &serde_json::Error, json: &String) {
     let json = json.as_bytes();
     let mut start = column;
     let mut end = column;
-    for _ in 0..200 {
+    for _ in 0..500 {
         if start == 0 {
             break;
         }
         start -= 1;
     }
-    for _ in 0..200 {
+    for _ in 0..500 {
         if end == json.len() {
             break;
         }
         end += 1;
     }
     let json = String::from_utf8_lossy(&json[start..end]);
+    let json = json.replace(
+        &json[..(column - 1)],
+        &json[(column)..=(column + 5)].red().to_string(),
+    );
     error!("Error JSON preview window: {}", json);
     // wait until 'enter' is pressed
     // let mut input = String::new();
     // std::io::stdin()
     //     .read_line(&mut input)
     //     .expect("should be able to read line");
+    //     fn invalid_type(unexp: Unexpected<'_>, exp: &dyn Expected) -> Self
 }
