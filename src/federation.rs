@@ -888,6 +888,13 @@ async fn get_status_context(
 }
 
 fn json_window(err: &serde_json::Error, json: &String) {
+    // If it's a syntax error, we can show the error location
+    use serde_json::error::Category;
+    match err.classify() {
+        Category::Io | Category::Syntax | Category::Data | Category::Eof => {
+            error!("{}", json.to_string());
+        }
+    }
     let column = err
         .to_string()
         .split("column ")
