@@ -332,7 +332,7 @@ impl Federation {
 
     /// Fetches trending hashtags from the specified instance.
     pub async fn fetch_trending_statuses(base: &str, instance: &Instance) -> Result<Vec<Status>> {
-        info!("Fetching trending statuses from {base}");
+        debug!("Fetching trending statuses from {base}");
         let fetch_timer_start = std::time::Instant::now();
         let client = instance.client();
         let base = base
