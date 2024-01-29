@@ -472,7 +472,7 @@ impl Federation {
                     "Search for Status".to_string(),
                 ));
             }
-            info!("Search success for status: {uri}", uri = uri);
+            debug!("Search success for status: {uri}", uri = uri);
             let search_result = search_result.text().await.expect("should be search result");
             let search_result_result = serde_json::from_str::<SearchResult>(&search_result);
             if let Err(err) = search_result_result {
