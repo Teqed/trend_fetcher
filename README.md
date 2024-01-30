@@ -10,7 +10,9 @@
   - [Releases](#releases)
   - [Compiling from Source](#compiling-from-source)
   - [Configuration](#configuration)
+    - [Mastodon Configuration](#mastodon-configuration)
   - [Running](#running)
+  - [Additional Notes](#additional-notes)
 
 ## About
 
@@ -93,7 +95,7 @@ The recommended environment is localhost to your Mastodon instance. Additional c
 
 ### Releases
 
-Pre-compiled releases are not available yet. When they are, they will be available on the Releases page. For now, see Compiling from Source.
+Pre-compiled releases are not available yet. When they are, they will be available on the Releases page. For now, see [Compiling from Source](#compiling-from-source).
 
 ### Compiling from Source
 
@@ -172,6 +174,32 @@ sudo nano /etc/postgresql/12/main/pg_hba.conf
 local   all             mastodon                                md5
 ```
 
+#### Mastodon Configuration
+
+The table `status_trends` is responsible for tracking score and rank of statuses that are trending. The `allowed` column determines if a status is eligible to be included in the "Explore" page. By default, Mastodon applies filters to determine if a status fits the criteria for trending. By my findings, statuses side-loaded in this manner aren't considered eliglible, so we'll need to alter these filters to allow TrendFetcher to populate the table.
+
+You can find the following statement in `app/models/trends/statuses.rb`:
+```ruby
+StatusTrend.upsert_all(to_insert.map { |(score, status)| { status_id: status.id, account_id: status.account_id, score: score, language: status.language, allowed: status.trendable? || false } }, unique_by: :status_id) if to_insert.any?
+```
+
+(Developer note: Do you know where the behavior for `status.trendable` is defined? Statuses seem to inherit this behavior from somewhere I've yet to find.)
+
+Change the `allowed` value to always be `true`:
+```diff
+StatusTrend.upsert_all(to_insert.map { |(score, status)| { status_id: status.id, account_id: status.account_id, score: score, language: status.language,
+-    allowed: status.trendable? || false
++    allowed: true
+    } }, unique_by: :status_id) if to_insert.any?
+```
+
+![alt text](docs/image_status_trends_table_0.png)
+
+Restart mastodon-web to apply the changes. (Developer note: Does mastodon-web have to be restarted for these changes to take effect, or are the changes hot-reloaded?)
+```bash
+sudo systemctl restart mastodon-web
+```
+
 ### Running
 
 The compiled binary will be located at `target/release/trend_fetcher`. You'll want to run the project from the root directory, so that it can find the `Rocket.toml` and `config.toml` files.
@@ -213,3 +241,16 @@ sudo systemctl daemon-reload
 sudo systemctl enable trend_fetcher.timer
 sudo systemctl start trend_fetcher.timer
 ```
+
+After making all the above changes and allowing the service to run, you should see the "Explore" page populate after a few minutes, once Mastodon has had a chance to calculate the scores and ranks of the statuses.
+
+## Additional Notes
+
+- Interaction counters in social media posts can be a [dark pattern.](https://en.wikipedia.org/wiki/Dark_pattern) Browse responsibly.
+- Currently, replies are not fetched, but you may find projects like [FediFetcher](https://github.com/nanos/FediFetcher) interesting.
+- The service will only fetch statuses from the "Explore" page. It will not fetch statuses from the "Local" or "Federated" pages. Relays are better suited for this purpose.
+- Because access to the PostgreSQL database is required, which is typically only reachable on the local network, this service is best run on the same network as your Mastodon instance. If you'd like to run it remotely, you'll need to configure your PostgreSQL database to allow remote connections, which is outside the scope of this document.
+- The Mastodon API applies some rate limits to the Search endpoint, even for authenticated users. These rate limits can be bypassed by requests *from the local network*, allowing the service to run faster. If you'd like to run the service remotely, you'll need to configure your Mastodon instance to allow remote requests to bypass the rate limits, which is outside the scope of this document.
+- Mastodon will only fetch statuses from HTTPS endpoints, meaning a secure domain must be used, even if the service is only accessible on localhost. Bypassing this requirement is beyond the scope of this document.
+- Because you need the above access *in addition to* a token to authenticate with the Mastodon API, this service is not suitable for use with a public instance. It is intended for use with a private instance, or a public instance that you have administrative access to. If you run a public instance and would like to use this service, contact me for suggestions.
+- You can adjust the half-life of trend scores in `app/models/trends/statuses.rb`. The default is 1 hour and a decay base of 0.5, meaning a status will lose half of its score every hour. You can decrease the lifetime or increase the decay base to make the "Explore" page more dynamic, or increase the lifetime or decrease the decay base to make the "Explore" page more static. In 2023 the half-life was reduced from 2 hours to 1 hour in the official Mastodon release, and if using this tool I would recommend allowing scores to decay at an accelerated rate.
