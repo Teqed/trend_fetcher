@@ -5,6 +5,9 @@
     port = 5432
     name = "mastodon_production"
 
+[rocket]
+    hostname = "trendfetcher.example.com"
+
 [servers]
     home = "mastodon.example.com"
 

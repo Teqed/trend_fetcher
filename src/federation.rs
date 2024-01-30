@@ -401,6 +401,7 @@ impl Federation {
         pool: &PgPool,
         home_instance_url: &String,
         home_instance: &Instance,
+        rocket_hostname: &String,
     ) -> Result<i64> {
         debug!("Finding status ID for {uri}", uri = status.uri);
         let client = home_instance.client();
@@ -434,7 +435,7 @@ impl Federation {
                 .split('@')
                 .next()
                 .expect("should be user name");
-            let replacement_uri = format!("https://trendfetcher.shatteredsky.net/users/{user_name_without_domain}/statuses/{status_id_from_uri}");
+            let replacement_uri = format!("https://{rocket_hostname}.shatteredsky.net/users/{user_name_without_domain}/statuses/{status_id_from_uri}");
             let search_url = format!(
                 "https://{home_instance_url}/api/v2/search?q={replacement_uri}&resolve=true"
             );
@@ -473,7 +474,7 @@ impl Federation {
                         uri = uri
                     );
                     tokio::time::sleep(duration).await;
-                    return Self::find_status_id(status, pool, home_instance_url, home_instance)
+                    return Self::find_status_id(status, pool, home_instance_url, home_instance, rocket_hostname)
                         .await;
                 }
                 error!("Error HTTP: {}", search_result.status());
@@ -539,6 +540,7 @@ impl Federation {
         pool: &PgPool,
         home_server_url: &String,
         home_server_instance: &Instance,
+        rocket_hostname: &String,
         instance_collection: &HashMap<String, Instance>,
     ) -> Result<Option<HashMap<String, Status>>> {
         debug!("Status: {}", &status.uri);
@@ -555,7 +557,7 @@ impl Federation {
         }
         let mut additional_context_statuses = HashMap::new();
         let status_id =
-            Self::find_status_id(status, pool, home_server_url, home_server_instance).await;
+            Self::find_status_id(status, pool, home_server_url, home_server_instance, rocket_hostname).await;
         if status_id.is_err() {
             warn!(
                 "Status not found by home server, skipping: {} , Error: {}",

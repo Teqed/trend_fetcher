@@ -89,14 +89,23 @@ use tracing::{debug, error, info, warn};
 /// Configuration struct for the application.
 struct Config {
     /// Database configuration.
-    pub database: Database,
+    pub database: DatabaseConfig,
+    /// Rocket configuration.
+    pub rocket: RocketConfig,
     /// Servers configuration.
-    pub servers: Servers,
+    pub servers: ServersConfig,
+}
+
+#[derive(Deserialize)]
+/// Rocket configuration.
+struct RocketConfig {
+    /// Rocket hostname.
+    pub hostname: String,
 }
 
 #[derive(Deserialize)]
 /// Servers configuration.
-struct Servers {
+struct ServersConfig {
     /// Home server.
     pub home: String,
     /// Authenticated servers.
@@ -107,7 +116,7 @@ struct Servers {
 
 #[derive(Deserialize)]
 /// Database configuration.
-struct Database {
+struct DatabaseConfig {
     /// Database username.
     pub username: String,
     /// Database password.
@@ -202,6 +211,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             return Err(e.into());
         }
     };
+    let rocket_hostname = config.rocket.hostname.clone();
     let mut queued_servers: HashSet<String> = HashSet::new();
     let home_server_string = config.servers.home.clone();
     let home_server: Instance =
@@ -298,12 +308,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 let home_instance = home_server.clone();
                 let pool = pool.clone();
                 let instance_collection = instance_collection.clone();
+                let rocket_hostname = rocket_hostname.clone();
                 async move {
                     Federation::fetch_status(
                         &status,
                         &pool,
                         &home_server_string,
                         &home_instance,
+                        &rocket_hostname,
                         &instance_collection,
                     )
                     .await
@@ -317,7 +329,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .expect("Error fetching context statuses from queued statuses");
         info!("Shutting down Rocket");
         let request_shutdown = reqwest::Client::new()
-            .post("https://trendfetcher.shatteredsky.net/shutdown")
+            .post("https://{rocket_hostname}/shutdown")
             .send()
             .await;
 
