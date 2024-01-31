@@ -350,16 +350,21 @@ impl Federation {
             let mut params = HashMap::new();
             params.insert("offset", offset.to_string());
             params.insert("limit", limit.to_string());
-            let parsed_uri = Url::parse_with_params(&url, &params);
-            if parsed_uri.is_err() {
-                error!(
-                    "Error parsing URI: {} on {}",
-                    parsed_uri.expect_err("Trending statuses error"),
-                    url.red()
-                );
-                break;
-            }
-            let response = client.get(parsed_uri.expect("a parsed url should be valid uri")).timeout(Duration::from_secs(30)).send().await;
+            let parsed_uri: Url = match Url::parse_with_params(&url, &params) {
+                Ok(parsed_uri) => parsed_uri,
+                Err(err) => {
+                    error!("Error parsing URI: {} on {}", err, url.red());
+                    break;
+                }
+            };
+            let parsed_uri: http::Uri = match parsed_uri.as_str().parse() {
+                Ok(parsed_uri) => parsed_uri,
+                Err(err) => {
+                    error!("Error parsing URI: {} on {}", err, url.red());
+                    break;
+                }
+            };
+            let response = client.get(parsed_uri.to_string()).timeout(Duration::from_secs(30)).send().await;
             if response.is_err() {
                 error!(
                     "Error HTTP: {} on {}",
@@ -449,18 +454,17 @@ impl Federation {
             let search_url = format!(
                 "https://{home_instance_url}/api/v2/search?q={replacement_uri}&resolve=true"
             );
-            let parsed_search_url = Url::parse(&search_url);
-            if parsed_search_url.is_err() {
-                error!(
-                    "Error parsing URI: {} on {}",
-                    parsed_search_url.expect_err("Search for Status"),
-                    search_url.red()
-                );
-                return Err(mastodon_async::Error::Other(
-                    "Search for Status".to_string(),
-                ));
-            }
-            debug!("Searching for status: {uri}", uri = parsed_search_url.expect("a parsed url should be valid uri"));
+            let parsed_search_url: Url = match Url::parse(&search_url) {
+                Ok(parsed_uri) => parsed_uri,
+                Err(err) => {
+                    error!("Error parsing URI: {} on {}", err, search_url.red());
+                    return Err(mastodon_async::Error::Other(
+                        "Search for Status".to_string(),
+                    ));
+                }
+            };
+            let parsed_search_url: http::Uri = parsed_search_url.as_str().parse().expect("a parsed Url should always be a valid Uri");
+            debug!("Searching for status: {uri}", uri = parsed_search_url);
             let search_result = client
                 .get(&search_url)
                 .timeout(Duration::from_secs(30))
@@ -811,16 +815,21 @@ async fn get_status_context(
 ) -> Option<Context> {
     let original_id_string = &original_id.to_string();
     let url_string = format!("https://{base_server}/api/v1/statuses/{original_id_string}/context");
-    let url = Url::parse(&url_string);
-    if url.is_err() {
-        error!(
-            "Error parsing URI: {} on {}",
-            url.expect_err("Context of Status"),
-            url_string.red()
-        );
-        return None;
-    }
-    let url = url.expect("should be url");
+    let url: Url = match Url::parse(&url_string) {
+        Ok(url_string) => url_string,
+        Err(err) => {
+            error!("Error parsing URI: {} on {}", err, url_string);
+            return None;
+        }
+    };
+    let url: http::Uri = match url.as_str().parse() {
+        Ok(url) => url,
+        Err(err) => {
+            error!("Error parsing URI: {} on {}", err, url);
+            return None;
+        }
+    };
+    let url = url.to_string();
 
     let instance = instance_collection
         .get(&base_server)
