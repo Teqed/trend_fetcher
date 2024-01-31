@@ -350,7 +350,16 @@ impl Federation {
             let mut params = HashMap::new();
             params.insert("offset", offset.to_string());
             params.insert("limit", limit.to_string());
-            let response = client.get(&url).timeout(Duration::from_secs(30)).query(&params).send().await;
+            let parsed_uri = Url::parse_with_params(&url, &params);
+            if parsed_uri.is_err() {
+                error!(
+                    "Error parsing URI: {} on {}",
+                    parsed_uri.expect_err("Trending statuses error"),
+                    url.red()
+                );
+                break;
+            }
+            let response = client.get(parsed_uri.expect("a parsed url should be valid uri")).timeout(Duration::from_secs(30)).send().await;
             if response.is_err() {
                 error!(
                     "Error HTTP: {} on {}",
@@ -440,7 +449,18 @@ impl Federation {
             let search_url = format!(
                 "https://{home_instance_url}/api/v2/search?q={replacement_uri}&resolve=true"
             );
-            debug!("Searching for status: {uri}", uri = uri);
+            let parsed_search_url = Url::parse(&search_url);
+            if parsed_search_url.is_err() {
+                error!(
+                    "Error parsing URI: {} on {}",
+                    parsed_search_url.expect_err("Search for Status"),
+                    search_url.red()
+                );
+                return Err(mastodon_async::Error::Other(
+                    "Search for Status".to_string(),
+                ));
+            }
+            debug!("Searching for status: {uri}", uri = parsed_search_url.expect("a parsed url should be valid uri"));
             let search_result = client
                 .get(&search_url)
                 .timeout(Duration::from_secs(30))
@@ -791,6 +811,16 @@ async fn get_status_context(
 ) -> Option<Context> {
     let original_id_string = &original_id.to_string();
     let url_string = format!("https://{base_server}/api/v1/statuses/{original_id_string}/context");
+    let url = Url::parse(&url_string);
+    if url.is_err() {
+        error!(
+            "Error parsing URI: {} on {}",
+            url.expect_err("Context of Status"),
+            url_string.red()
+        );
+        return None;
+    }
+    let url = url.expect("should be url");
 
     let instance = instance_collection
         .get(&base_server)
@@ -798,7 +828,7 @@ async fn get_status_context(
     let client = instance.client();
     if let Some(instance_token) = instance.token() {
         let response = client
-            .get(&url_string)
+            .get(url.clone())
             .timeout(Duration::from_secs(30))
             .bearer_auth(instance_token)
             .send()
@@ -808,7 +838,7 @@ async fn get_status_context(
                 "{} {} from {}",
                 "Error result:".red(),
                 response.expect_err("Context of Status"),
-                &url_string
+                &url
             );
             return None;
         }
@@ -829,7 +859,7 @@ async fn get_status_context(
                 info!(
                     "Sleeping for {duration} seconds for {uri}",
                     duration = duration.as_secs(),
-                    uri = &url_string
+                    uri = &url
                 );
                 tokio::time::sleep(duration).await;
                 return get_status_context(instance_collection, base_server, original_id).await;
@@ -838,7 +868,7 @@ async fn get_status_context(
                 "{} {} from {}",
                 "Error HTTP:".red(),
                 response.status(),
-                &url_string
+                &url
             );
             return None;
         }
@@ -851,13 +881,13 @@ async fn get_status_context(
         }
         return Some(context.expect("should be Context of Status"));
     }
-    let response = client.get(&url_string).timeout(Duration::from_secs(30)).send().await;
+    let response = client.get(url.clone()).timeout(Duration::from_secs(30)).send().await;
     if response.is_err() {
         error!(
             "{} {} from {}",
             "Error result:".red(),
             response.expect_err("Context of Status"),
-            &url_string
+            &url
         );
         return None;
     }
@@ -878,7 +908,7 @@ async fn get_status_context(
             info!(
                 "Sleeping for {duration} seconds for {uri}",
                 duration = duration.as_secs(),
-                uri = &url_string
+                uri = &url
             );
             tokio::time::sleep(duration).await;
             return get_status_context(instance_collection, base_server, original_id).await;
@@ -887,7 +917,7 @@ async fn get_status_context(
             "{} {} from {}",
             "Error HTTP:".red(),
             response.status(),
-            &url_string
+            &url
         );
         return None;
     }
