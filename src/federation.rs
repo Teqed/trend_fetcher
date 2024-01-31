@@ -1,5 +1,6 @@
 use async_recursion::async_recursion;
 use std::collections::HashMap;
+use std::time::Duration;
 
 use mastodon_async::prelude::*;
 use mastodon_async::{helpers::cli, Result};
@@ -349,7 +350,7 @@ impl Federation {
             let mut params = HashMap::new();
             params.insert("offset", offset.to_string());
             params.insert("limit", limit.to_string());
-            let response = client.get(&url).query(&params).send().await;
+            let response = client.get(&url).timeout(Duration::from_secs(30)).query(&params).send().await;
             if response.is_err() {
                 error!(
                     "Error HTTP: {} on {}",
@@ -442,6 +443,7 @@ impl Federation {
             debug!("Searching for status: {uri}", uri = uri);
             let search_result = client
                 .get(&search_url)
+                .timeout(Duration::from_secs(30))
                 .bearer_auth(home_instance_token)
                 .send()
                 .await;
@@ -797,6 +799,7 @@ async fn get_status_context(
     if let Some(instance_token) = instance.token() {
         let response = client
             .get(&url_string)
+            .timeout(Duration::from_secs(30))
             .bearer_auth(instance_token)
             .send()
             .await;
@@ -848,7 +851,7 @@ async fn get_status_context(
         }
         return Some(context.expect("should be Context of Status"));
     }
-    let response = client.get(&url_string).send().await;
+    let response = client.get(&url_string).timeout(Duration::from_secs(30)).send().await;
     if response.is_err() {
         error!(
             "{} {} from {}",
