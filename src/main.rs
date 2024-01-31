@@ -328,8 +328,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .collect::<Result<Vec<_>, _>>()
             .expect("Error fetching context statuses from queued statuses");
         info!("Shutting down Rocket");
+        let shutdown_url = format!("https://{rocket_hostname}/shutdown");
         let request_shutdown = reqwest::Client::new()
-            .post("https://{rocket_hostname}/shutdown")
+            .post(shutdown_url)
             .send()
             .await;
 
