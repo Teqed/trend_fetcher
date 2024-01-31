@@ -450,7 +450,7 @@ impl Federation {
                 .split('@')
                 .next()
                 .expect("should be user name");
-            let replacement_uri = format!("https://{rocket_hostname}.shatteredsky.net/users/{user_name_without_domain}/statuses/{status_id_from_uri}");
+            let replacement_uri = format!("https://{rocket_hostname}/users/{user_name_without_domain}/statuses/{status_id_from_uri}");
             let search_url = format!(
                 "https://{home_instance_url}/api/v2/search?q={replacement_uri}&resolve=true"
             );
