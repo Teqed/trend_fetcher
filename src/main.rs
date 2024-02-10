@@ -329,10 +329,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             .expect("Error fetching context statuses from queued statuses");
         info!("Shutting down Rocket");
         let shutdown_url = format!("https://{rocket_hostname}/shutdown");
-        let request_shutdown = reqwest::Client::new()
-            .post(shutdown_url)
-            .send()
-            .await;
+        let request_shutdown = reqwest::Client::new().post(shutdown_url).send().await;
 
         for (_, status) in queued_statuses.clone() {
             Federation::modify_counts(&mut fetched_statuses, status);

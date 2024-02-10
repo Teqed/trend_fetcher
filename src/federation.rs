@@ -369,7 +369,11 @@ impl Federation {
                     break;
                 }
             };
-            let response = client.get(parsed_uri.to_string()).timeout(Duration::from_secs(30)).send().await;
+            let response = client
+                .get(parsed_uri.to_string())
+                .timeout(Duration::from_secs(30))
+                .send()
+                .await;
             if response.is_err() {
                 error!(
                     "Error HTTP: {} on {}",
@@ -468,7 +472,10 @@ impl Federation {
                     ));
                 }
             };
-            let parsed_search_url: http::Uri = parsed_search_url.as_str().parse().expect("a parsed Url should always be a valid Uri");
+            let parsed_search_url: http::Uri = parsed_search_url
+                .as_str()
+                .parse()
+                .expect("a parsed Url should always be a valid Uri");
             debug!("Searching for status: {uri}", uri = parsed_search_url);
             let search_result = client
                 .get(&search_url)
@@ -505,8 +512,14 @@ impl Federation {
                         uri = uri
                     );
                     tokio::time::sleep(duration).await;
-                    return Self::find_status_id(status, pool, home_instance_url, home_instance, rocket_hostname)
-                        .await;
+                    return Self::find_status_id(
+                        status,
+                        pool,
+                        home_instance_url,
+                        home_instance,
+                        rocket_hostname,
+                    )
+                    .await;
                 }
                 error!("Error HTTP: {}", search_result.status());
                 return Err(mastodon_async::Error::Other(
@@ -587,8 +600,14 @@ impl Federation {
             return Ok(None);
         }
         let mut additional_context_statuses = HashMap::new();
-        let status_id =
-            Self::find_status_id(status, pool, home_server_url, home_server_instance, rocket_hostname).await;
+        let status_id = Self::find_status_id(
+            status,
+            pool,
+            home_server_url,
+            home_server_instance,
+            rocket_hostname,
+        )
+        .await;
         if status_id.is_err() {
             warn!(
                 "Status not found by home server, skipping: {} , Error: {}",
@@ -895,7 +914,11 @@ async fn get_status_context(
         }
         return Some(context.expect("should be Context of Status"));
     }
-    let response = client.get(url.clone()).timeout(Duration::from_secs(30)).send().await;
+    let response = client
+        .get(url.clone())
+        .timeout(Duration::from_secs(30))
+        .send()
+        .await;
     if response.is_err() {
         error!(
             "{} {} from {}",
