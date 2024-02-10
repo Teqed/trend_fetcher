@@ -309,7 +309,10 @@ impl Federation {
         if !client_collection.contains_key(server) {
             debug!("Creating new client for instance: {server}");
             if should_register {
-                let client = ClientBuilder::new(reqwest::Client::new())
+                let client = ClientBuilder::new(reqwest::ClientBuilder::new()
+                        .user_agent("Mozilla/5.0 (compatible; TrendFetcher/0.1.0; +https://github.com/Teqed/trend_fetcher by teq@shatteredsky.net)")
+                        .build().expect("should be reqwest::Client")
+                    )
                     .with(RetryAfterMiddleware::new())
                     .build();
                 let mastodon_instance = Self::register(server).await.expect("should be Mastodon");
@@ -318,7 +321,9 @@ impl Federation {
                 client_collection.insert(server.to_string(), instance.clone());
                 return instance;
             }
-            let client = ClientBuilder::new(reqwest::Client::new())
+            let client = ClientBuilder::new(reqwest::ClientBuilder::new()
+                    .user_agent("Mozilla/5.0 (compatible; TrendFetcher/0.1.0; +https://github.com/Teqed/trend_fetcher by teq@shatteredsky.net)")
+                    .build().expect("should be reqwest::Client"))
                 .with(RetryAfterMiddleware::new())
                 .build();
             let instance = Instance::InstanceWithoutToken { client };
