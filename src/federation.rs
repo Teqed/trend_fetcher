@@ -712,7 +712,14 @@ async fn update_status(
         &status.uri
     );
     let update_statement = sqlx::query!(
-        r#"UPDATE status_stats SET reblogs_count = $1, favourites_count = $2, updated_at = $3 WHERE status_id = $4"#,
+        r#"UPDATE status_stats SET replies_count = $1, reblogs_count = $2, favourites_count = $3, updated_at = $4 WHERE status_id = $5"#,
+        std::cmp::max(
+            status.replies_count.try_into().unwrap_or_else(|_| {
+                warn!("Failed to convert replies_count to i64");
+                0
+            }),
+            replies_count
+        ),
         std::cmp::max(
             status.reblogs_count.try_into().unwrap_or_else(|_| {
                 warn!("Failed to convert reblogs_count to i64");
@@ -735,7 +742,7 @@ async fn update_status(
         error!("Error updating status: {err}");
         return None;
     }
-    if status.replies_count > replies_count {
+    if status.replies_count > replies_count && status.in_reply_to_id.is_none() {
         let descendants = get_status_descendants(status, instance_collection).await;
         if descendants.is_none() {
             debug!("Error fetching descendants");
@@ -763,7 +770,10 @@ async fn insert_status(
             warn!("Failed to convert reblogs_count to i64");
             0
         }),
-        0,
+        status.replies_count.try_into().unwrap_or_else(|_| {
+            warn!("Failed to convert replies_count to i64");
+            0
+        }),
         status.favourites_count.try_into().unwrap_or_else(|_| {
             warn!("Failed to convert favourites_count to i64");
             0
@@ -776,7 +786,7 @@ async fn insert_status(
         error!("Error inserting status {} : {err}", &status.uri);
         return None;
     }
-    if status.replies_count > 0 {
+    if status.replies_count > 0 && status.in_reply_to_id.is_none() {
         let descendants = get_status_descendants(status, instance_collection).await;
         if descendants.is_none() {
             debug!("No descendants fetched for status: {}", &status.uri);
@@ -788,12 +798,10 @@ async fn insert_status(
     None
 }
 
-#[allow(unreachable_code, unused_variables)]
 async fn get_status_descendants(
     status: &Status,
     instance_collection: &HashMap<String, Instance>,
 ) -> Option<Vec<Status>> {
-    return None; // TODO: Temporarily disables fetching descendants while we work on the API
     debug!("Fetching context for status: {}", &status.uri);
     let original_id = StatusId::new(
         status
