@@ -215,8 +215,8 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
         context,
         id: status.uri.clone(),
         type_: "Note".to_string(),
-        summary: None,
-        in_reply_to: None,
+        summary: None, // TODO: Add summary
+        in_reply_to: status.in_reply_to_id.clone().map(|id| id.to_string().into()),
         published: status.created_at.to_string(),
         url: status.url.clone().expect("should be url"),
         uri: status.uri.clone(),
@@ -239,7 +239,7 @@ fn convert_status_to_activitypub(status: &Status) -> ActivityPubNote {
         )],
         sensitive: status.sensitive,
         atom_uri: Some(status.uri.clone()),
-        in_reply_to_atom_uri: None,
+        in_reply_to_atom_uri: None, // TODO: Add in_reply_to_atom_uri
         conversation: String::new(),
         content: status.content.clone(),
         content_map,
@@ -440,12 +440,6 @@ impl Federation {
             Ok(status_record.id)
         } else {
             debug!("Status not found in database, searching for it: {uri}");
-            if status.in_reply_to_id.is_some() {
-                debug!("Status is a reply, skipping: {}", &status.uri);
-                return Err(mastodon_async::Error::Other(
-                    "Status is a reply".to_string(),
-                ));
-            }
             let status_id_from_uri = status
                 .uri
                 .as_ref()
