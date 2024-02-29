@@ -17,7 +17,7 @@ use reqwest_retry_after::RetryAfterMiddleware;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use rocket::{self, State};
+use rocket::State;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ActivityPubNote {
@@ -994,10 +994,10 @@ fn json_window(err: &serde_json::Error, json: &String) {
         end += 1;
     }
     let json = String::from_utf8_lossy(&json[start..end]);
-    let json = json.replace(
-        &json[column - start..column - start + 5],
-        &json[column - start..column - start + 5].red().to_string(),
-    );
+    // let json = json.replace(
+    //     &json[column - start..column - start + 5],
+    //     &json[column - start..column - start + 5].red().to_string(),
+    // );
     error!("Error JSON preview window: {}", json);
     // wait until 'enter' is pressed
     // let mut input = String::new();
